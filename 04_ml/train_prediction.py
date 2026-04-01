@@ -356,6 +356,10 @@ def train():
     print(f"   📊 Dataset  : {len(df):,} lignes | {len(features)} features")
     print(f"   📋 Features : {features}\n")
 
+    if df.empty or len(df) < WINDOW_SIZE + HORIZON:
+        print(f"   ❌ Erreur Critique : Dataset vide ou insuffisant ({len(df)} lignes). Entraînement annulé.")
+        return
+
     # ── Normalisation ─────────────────────────────────────────
     scaler = MinMaxScaler()
     scaled = scaler.fit_transform(df[features].ffill().bfill())

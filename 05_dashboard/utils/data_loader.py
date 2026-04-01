@@ -70,6 +70,9 @@ def _load_bronze_filtered(hours_back=2):
 
 def _enrich_bronze(df):
     """Enrichissement inline des données Bronze (rolling, anomalies, PUE)."""
+    if df.empty:
+        return df
+
     df["ts"] = pd.to_datetime(df["timestamp"], format="ISO8601")
     df = df.sort_values(["sensor_id", "ts"])
     

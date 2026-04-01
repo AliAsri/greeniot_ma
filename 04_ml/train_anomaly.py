@@ -79,6 +79,10 @@ def train_anomaly_detector():
     print(f"   📊 Dataset: {len(df)} lignes, {len(features)} features")
     print(f"   📋 Features: {features}\n")
 
+    if df.empty or len(df) < 50:
+        print(f"   ❌ Erreur Critique : Dataset vide ou insuffisant ({len(df)} lignes). Entraînement annulé.")
+        return
+
     X = df[features].fillna(0).values
 
     # Normalisation
