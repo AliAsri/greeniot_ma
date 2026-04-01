@@ -46,8 +46,11 @@ def render():
         with col_f3:
             smoothing = st.selectbox("Type d'affichage (Lissage)", ["Données brutes", "Lissage (Moyenne Mobile)"], index=0)
     
-    # Filtrer le DataFrame
-    df_filtered = df[df["sensor_id"].isin(racks)].copy() if racks else df.copy()
+    # Garder une version non tronquée par le temps pour des KPIs (H vs H-1) équitables
+    df_racks = df[df["sensor_id"].isin(racks)].copy() if racks else df.copy()
+    
+    # Filtrer temporellement pour les graphiques
+    df_filtered = df_racks.copy()
     if not df_filtered.empty and "ts" in df_filtered.columns:
         if period == "15 min":
             cutoff = df_filtered["ts"].max() - pd.Timedelta(minutes=15)
@@ -61,11 +64,12 @@ def render():
         
         # Application du lissage si demandé (purement visuel pour les graphiques)
         if smoothing == "Lissage (Moyenne Mobile)":
-            numeric_cols = df_filtered.select_dtypes(include=[np.number]).columns
+            # BUG FIX : Ne SURTOUT PAS lisser les catégories booléennes !
+            numeric_cols = [c for c in df_filtered.select_dtypes(include=[np.number]).columns if c not in ["anomaly_flag", "Score Criticité"]]
             for col in numeric_cols:
                 df_filtered[col] = df_filtered.groupby("sensor_id")[col].transform(lambda x: x.rolling(3, min_periods=1).mean())
     else:
-        df_filtered = df.copy()
+        df_filtered = df_racks.copy()
     # ── KPIs ──────────────────────────────────────────────────
     c1, c2, c3, c4 = st.columns(4)
 
@@ -73,13 +77,17 @@ def render():
     total_power = df_filtered.groupby("sensor_id")["power_kw"].mean().sum()
     avg_pue = df_filtered["pue"].mean() if "pue" in df_filtered.columns else 1.45
     n_anomalies = int(df_filtered["anomaly_flag"].sum()) if "anomaly_flag" in df_filtered.columns else 0
-    co2_saved = (500 - total_power) * 0.7
+    
+    # Baseline power proportionnelle au nombre de racks (Max théorique réaliste ~85kW par baie)
+    n_active_racks = len(df_filtered["sensor_id"].unique()) if "sensor_id" in df_filtered.columns and not df_filtered.empty else 3
+    baseline_power = n_active_racks * 85.0
+    co2_saved = max(0, (baseline_power - total_power)) * 0.7
 
-    # Trend rigoureux : H courante vs H précédente
-    if "ts" in df_filtered.columns and not df_filtered.empty:
-        now = df_filtered["ts"].max()
-        h_courante = df_filtered[df_filtered["ts"] >= now - pd.Timedelta(hours=1)]
-        h_precedente = df_filtered[(df_filtered["ts"] >= now - pd.Timedelta(hours=2)) & (df_filtered["ts"] < now - pd.Timedelta(hours=1))]
+    # Trend rigoureux : H courante vs H précédente (Généré sur le dataset complet 2h, indépendant du filtre UI)
+    if "ts" in df_racks.columns and not df_racks.empty:
+        now = df_racks["ts"].max()
+        h_courante = df_racks[df_racks["ts"] >= now - pd.Timedelta(hours=1)]
+        h_precedente = df_racks[(df_racks["ts"] >= now - pd.Timedelta(hours=2)) & (df_racks["ts"] < now - pd.Timedelta(hours=1))]
         recent_p = h_courante.groupby("sensor_id")["power_kw"].mean().sum() if not h_courante.empty else total_power
         older_p = h_precedente.groupby("sensor_id")["power_kw"].mean().sum() if not h_precedente.empty else recent_p
         power_trend_pct = ((recent_p - older_p) / max(1, abs(older_p))) * 100
@@ -107,7 +115,7 @@ def render():
     c4.metric(
         "🌍 CO2 économisé",
         f"{co2_saved:.0f} kg/h",
-        delta="vs baseline 500 kW",
+        delta=f"vs baseline {baseline_power:.0f} kW",
         delta_color="off",
     )
     
@@ -173,7 +181,7 @@ def render():
                 colorscale="YlOrRd", # Plus lumineux et "alerte" (Yellow/Orange/Red)
                 colorbar=dict(title="°C", thickness=15),
                 hoverongaps=False,
-                zmin=20, zmax=80
+                zmin=30, zmax=55 # Plage dynamique réaliste pour des serveurs (au lieu de 20-80 qui écrasait le contraste)
             ))
             fig_temp.update_layout(
                 title=dict(text="🌡️ Carte Thermique", font=dict(size=14)),
@@ -219,6 +227,7 @@ def render():
             )
             fig_pue.add_hline(y=1.40, line_dash="dash", line_color="red",
                               annotation_text="Objectif 1.40")
+            fig_pue.update_yaxes(range=[1.2, 1.8]) # Zoom vertical sur la plage d'intérêt du PUE
             fig_pue.update_layout(template="plotly_white", height=300)
             st.plotly_chart(fig_pue, use_container_width=True)
 

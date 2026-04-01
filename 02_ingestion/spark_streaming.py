@@ -26,6 +26,7 @@ spark = SparkSession.builder \
     .appName("GreenIoT-Bronze-Ingestion") \
     .config("spark.driver.host", "127.0.0.1") \
     .config("spark.driver.bindAddress", "127.0.0.1") \
+    .config("spark.ui.port", "0") \
     .config("spark.jars.packages",
             "io.delta:delta-spark_2.12:3.0.0,"
             "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0,"

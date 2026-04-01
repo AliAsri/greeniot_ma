@@ -70,9 +70,6 @@ def _load_bronze_filtered(hours_back=2):
 
 def _enrich_bronze(df):
     """Enrichissement inline des données Bronze (rolling, anomalies, PUE)."""
-    if df.empty:
-        return df
-
     df["ts"] = pd.to_datetime(df["timestamp"], format="ISO8601")
     df = df.sort_values(["sensor_id", "ts"])
     
@@ -169,16 +166,23 @@ def load_bronze_solar():
         
         if df.empty:
             # Fallback si pas de données récentes
-            df = dt.to_pyarrow_table().to_pandas().tail(1000)
+            df = dt.to_pyarrow_table().to_pandas()
             
         df["ts"] = pd.to_datetime(df["timestamp"], format="mixed")
+        df = df.sort_values("ts") # IMPORTANT: Sortir temporellement pour enlever les 'dents de scie'
+        if df.empty:
+            pass
+        elif len(df) > 1000 and "timestamp" in df.columns:
+            df = df.tail(1000)
+            
         return df
     except Exception as e:
+        import traceback
         path = os.path.join(DATA_DIR, "raw_solar.parquet")
         if os.path.exists(path):
             df = pd.read_parquet(path)
             df["ts"] = pd.to_datetime(df["timestamp"], format="mixed", errors="coerce")
-            return df.tail(1000)
+            return df.sort_values("ts").tail(1000)
         return _generate_demo_solar_data()
 
 @st.cache_data(ttl=900)
@@ -250,17 +254,27 @@ def _generate_demo_server_data(n: int = 500):
     })
 
 def _generate_demo_solar_data(n: int = 500):
-    """Fallback : données solaires simulées."""
-    ts = pd.date_range(end=datetime.now(), periods=n, freq="5min")
-    np.random.seed(42)
+    """Fallback : données solaires séquentielles propres (sans zigzags)."""
+    ts = pd.date_range(end=datetime.now(), periods=n//2, freq="5min")
     hours = ts.hour + ts.minute / 60
     irradiance = np.maximum(0, np.sin(np.pi * (hours - 6) / 12))
 
-    return pd.DataFrame({
+    df1 = pd.DataFrame({
         "ts": ts,
         "timestamp": ts.astype(str),
-        "sensor_id": np.random.choice(["solar_panel_01", "solar_panel_02"], n),
-        "production_kw": (500 * irradiance * np.random.uniform(0.85, 1.0, n)).round(2),
+        "sensor_id": "solar_panel_01",
+        "production_kw": (500 * irradiance * np.random.uniform(0.9, 1.0, len(ts))).round(2),
         "irradiance_wm2": (irradiance * 1000).round(1),
-        "panel_temp_c": (25 + irradiance * 20 + np.random.randn(n) * 1.5).round(1),
+        "panel_temp_c": (25 + irradiance * 20 + np.random.randn(len(ts)) * 1.5).round(1),
     })
+    
+    df2 = pd.DataFrame({
+        "ts": ts,
+        "timestamp": ts.astype(str),
+        "sensor_id": "solar_panel_02",
+        "production_kw": (480 * irradiance * np.random.uniform(0.9, 1.0, len(ts))).round(2),
+        "irradiance_wm2": (irradiance * 1000).round(1),
+        "panel_temp_c": (25 + irradiance * 20 + np.random.randn(len(ts)) * 1.5).round(1),
+    })
+
+    return pd.concat([df1, df2]).sort_values("ts").reset_index(drop=True)

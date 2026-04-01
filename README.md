@@ -13,7 +13,7 @@ GreenIoT-MA est un pipeline end-to-end de monitoring intelligent pour les Green 
 
 - **Collecte IoT temps réel** via capteurs simulés (solaire, serveurs, refroidissement)
 - **Stockage Lakehouse souverain** avec architecture Medallion (Bronze → Silver → Gold)
-- **Machine Learning prédictif** : LSTM/XGBoost pour la consommation, Isolation Forest pour les anomalies
+- **Machine Learning prédictif** : LSTM/XGBoost pour la consommation, XGBoost Classifier pour les anomalies
 - **Optimisation de charge** : décalage des tâches batch vers les pics de production solaire
 - **Dashboard interactif** Streamlit pour le monitoring en temps réel
 
@@ -60,7 +60,7 @@ greeniot_ma/
 │
 ├── 04_ml/
 │   ├── train_prediction.py     # LSTM + XGBoost (prédiction conso)
-│   ├── train_anomaly.py        # Isolation Forest (anomalies)
+│   ├── train_anomaly.py        # XGBoost Classifier (anomalies supervisées)
 │   ├── optimize_load.py        # Décalage charge solaire
 │   └── mlflow_tracking.py      # Suivi expériences MLflow
 │
@@ -161,7 +161,7 @@ Le système s'appuie désormais sur des données réelles issues de 2 gros datas
 | Modèle | Métriques | Objectif |
 |--------|-----------|----------|
 | Prédiction conso (LSTM/XGBoost) | MAE, RMSE, R², MAPE | MAE < 5 kW, MAPE < 8% |
-| Détection anomalies (Isolation Forest) | Précision, Rappel, F1 | F1 > 0.80, FP < 5% |
+| Détection anomalies (XGBoost Classifier) | Précision, Rappel, F1 | F1 > 0.80, FP < 5% |
 | Optimiseur décalage | kWh décalés/j, CO2 économisé | ≥ 20% charge, ≥ 50 kg CO2/j |
 
 ## 🇲🇦 Contexte Maroc Digital 2030

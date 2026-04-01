@@ -73,7 +73,7 @@ def generate_server_data(days: int, interval_min: int) -> pd.DataFrame:
 
     for i in range(n_points):
         ts = start + timedelta(minutes=i * interval_min)
-        hour = ts.hour
+        hour = ts.hour + ts.minute / 60
         is_weekday = ts.weekday() < 5
 
         for sensor_id, max_kw, base_load in sensors:
@@ -115,7 +115,7 @@ def generate_cooling_data(days: int, interval_min: int) -> pd.DataFrame:
 
     for i in range(n_points):
         ts = start + timedelta(minutes=i * interval_min)
-        hour = ts.hour
+        hour = ts.hour + ts.minute / 60
 
         # Température extérieure variant avec l'heure (climat marocain)
         outdoor_temp = 25 + 10 * math.sin(math.pi * (hour - 6) / 12) + random.gauss(0, 2)

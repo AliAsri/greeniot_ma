@@ -82,9 +82,20 @@ def render():
 
     # Courbe de production (après KPIs)
     if "production_kw" in solar_df.columns:
+        plot_solar = solar_df.tail(600).copy() # Augmenté légèrement pour couvrir un trou
+        
+        # Remédier à la "ligne droite nocturne" s'il y a un trou de données : on force des zéros
+        if not plot_solar.empty and "sensor_id" in plot_solar.columns:
+            # Resampling crée des NaN là où la donnée manque (le PC était éteint)
+            plot_solar = plot_solar.set_index("ts").groupby("sensor_id").resample("15min")["production_kw"].mean()
+            # On remplace par 0.0 kW (le solaire s'éteint la nuit)
+            plot_solar = plot_solar.fillna(0.0).reset_index()
+            # Trier pour Plotly
+            plot_solar = plot_solar.sort_values("ts")
+
         fig_solar = px.area(
-            solar_df.tail(500), x="ts", y="production_kw",
-            color="sensor_id" if "sensor_id" in solar_df.columns else None,
+            plot_solar, x="ts", y="production_kw",
+            color="sensor_id" if "sensor_id" in plot_solar.columns else None,
             title="Production solaire (kW) — fenêtre récente",
             color_discrete_sequence=["#f57c00", "#ffb300"],
         )
@@ -124,7 +135,11 @@ def render():
     if not schedule.empty:
         st.dataframe(schedule, use_container_width=True, hide_index=True)
 
-    total_co2 = schedule["CO2 économisé (kg)"].sum()
+    if not schedule.empty and "CO2 économisé (kg)" in schedule.columns:
+        total_co2 = schedule["CO2 économisé (kg)"].sum()
+    else:
+        total_co2 = 0
+
     st.success(
         f"🌍 **CO2 total économisé : {total_co2:.2f} kg/jour** "
         f"| Objectif : ≥ 50 kg/jour {'✅' if total_co2 >= 50 else '❌'}"
@@ -146,20 +161,24 @@ def render():
         })
 
     gantt_df = pd.DataFrame(gantt_data)
-    gantt_df["Start"]  = pd.to_datetime(gantt_df["Start"])
-    gantt_df["Finish"] = pd.to_datetime(gantt_df["Finish"])
+    
+    if not gantt_df.empty:
+        gantt_df["Start"]  = pd.to_datetime(gantt_df["Start"])
+        gantt_df["Finish"] = pd.to_datetime(gantt_df["Finish"])
 
-    fig_gantt = px.timeline(
-        gantt_df, x_start="Start", x_end="Finish", y="Task",
-        color="Resource",
-        title="Planification des tâches batch sur fenêtre solaire",
-        color_discrete_sequence=["#43a047", "#fb8c00", "#e53935"],
-    )
-    fig_gantt.update_layout(
-        template="plotly_white", height=350,
-        yaxis=dict(autorange="reversed"),
-    )
-    st.plotly_chart(fig_gantt, use_container_width=True, config={"displayModeBar": True, "modeBarButtonsToAdd": ["downloadImage"]})
+        fig_gantt = px.timeline(
+            gantt_df, x_start="Start", x_end="Finish", y="Task",
+            color="Resource",
+            title="Planification des tâches batch sur fenêtre solaire",
+            color_discrete_sequence=["#43a047", "#fb8c00", "#e53935"],
+        )
+        fig_gantt.update_layout(
+            template="plotly_white", height=350,
+            yaxis=dict(autorange="reversed"),
+        )
+        st.plotly_chart(fig_gantt, use_container_width=True, config={"displayModeBar": True, "modeBarButtonsToAdd": ["downloadImage"]})
+    else:
+        st.info("Aucune tâche n'a pû être planifiée. Vérifiez les données solaires en entrée.")
 
     # ── Comparaison avant/après ───────────────────────────────
     st.subheader("📈 Impact de l'optimisation")

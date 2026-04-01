@@ -142,7 +142,7 @@ def mape(y_true, y_pred):
 # Entraînement LSTM
 # ══════════════════════════════════════════════════════════════
 
-def train_lstm(X_tr, y_tr, X_val, y_val, features):
+def train_lstm(X_tr, y_tr, X_val, y_val, features, scaler):
     with mlflow.start_run(run_name="LSTM_greeniot"):
         mlflow.log_params({
             "model_type":    "LSTM",
@@ -175,6 +175,17 @@ def train_lstm(X_tr, y_tr, X_val, y_val, features):
             epoch_iter = tqdm(range(EPOCHS), desc="  LSTM Epochs", unit="epoch", position=0)
         except ImportError:
             epoch_iter = range(EPOCHS)
+            
+        # Fonction pour désescalader les prédictions
+        def unscale_horizon(arr):
+            res = []
+            for h in range(arr.shape[1]):
+                dummy = np.zeros((len(arr), len(features)))
+                dummy[:, 0] = arr[:, h]
+                res.append(scaler.inverse_transform(dummy)[:, 0])
+            return np.column_stack(res)
+            
+        y_val_unscaled = unscale_horizon(y_val)
 
         best_mae  = float("inf")
         n_batches = len(tr_ds)
@@ -207,11 +218,13 @@ def train_lstm(X_tr, y_tr, X_val, y_val, features):
             model.eval()
             with torch.no_grad():
                 val_pred = model(torch.tensor(X_val)).numpy()
+                
+            val_pred_unscaled = unscale_horizon(val_pred)
 
-            mae      = mean_absolute_error(y_val, val_pred)
-            rmse     = np.sqrt(mean_squared_error(y_val, val_pred))
+            mae      = mean_absolute_error(y_val_unscaled, val_pred_unscaled)
+            rmse     = np.sqrt(mean_squared_error(y_val_unscaled, val_pred_unscaled))
             r2       = r2_score(y_val.flatten(), val_pred.flatten())
-            mape_val = mape(y_val.flatten(), val_pred.flatten())
+            mape_val = mape(y_val_unscaled.flatten(), val_pred_unscaled.flatten())
 
             mlflow.log_metrics({
                 "val_mae":    mae,
@@ -236,6 +249,13 @@ def train_lstm(X_tr, y_tr, X_val, y_val, features):
 
         os.makedirs(MODEL_DIR, exist_ok=True)
         torch.save(model.state_dict(), os.path.join(MODEL_DIR, "lstm_predictor.pt"))
+        
+        joblib.dump({
+            "mae": mae,
+            "rmse": rmse,
+            "r2": r2,
+            "mape": mape_val
+        }, os.path.join(MODEL_DIR, "lstm_metrics.pkl"))
 
         print(f"\n  ✅ LSTM — Best MAE: {best_mae:.4f}")
         return model, best_mae
@@ -356,10 +376,6 @@ def train():
     print(f"   📊 Dataset  : {len(df):,} lignes | {len(features)} features")
     print(f"   📋 Features : {features}\n")
 
-    if df.empty or len(df) < WINDOW_SIZE + HORIZON:
-        print(f"   ❌ Erreur Critique : Dataset vide ou insuffisant ({len(df)} lignes). Entraînement annulé.")
-        return
-
     # ── Normalisation ─────────────────────────────────────────
     scaler = MinMaxScaler()
     scaled = scaler.fit_transform(df[features].ffill().bfill())
@@ -378,7 +394,7 @@ def train():
     print("━" * 55)
     print("📈 Entraînement LSTM...")
     print("━" * 55)
-    lstm_model, lstm_mae = train_lstm(X_tr, y_tr, X_val, y_val, features)
+    lstm_model, lstm_mae = train_lstm(X_tr, y_tr, X_val, y_val, features, scaler)
 
     print(f"\n{'━' * 55}")
     print("🌲 Entraînement XGBoost...")

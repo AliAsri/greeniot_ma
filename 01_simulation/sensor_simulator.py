@@ -51,7 +51,8 @@ class ServerSensor:
         self._base_load = random.uniform(0.3, 0.6)
 
     def read(self) -> dict:
-        hour = datetime.now().hour
+        now = datetime.now()
+        hour = now.hour + now.minute / 60
 
         # Charge plus élevée aux heures de bureau
         if 8 <= hour <= 20:
@@ -105,7 +106,8 @@ class BatterySensor:
         self._soc = random.uniform(0.4, 0.8)
 
     def read(self) -> dict:
-        hour = datetime.now().hour
+        now = datetime.now()
+        hour = now.hour + now.minute / 60
 
         # Charge pendant les heures solaires, décharge la nuit
         if 10 <= hour <= 16:

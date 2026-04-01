@@ -1,12 +1,13 @@
 """
-GreenIoT-MA — Détection d'anomalies (Isolation Forest)
+GreenIoT-MA — Détection d'anomalies (XGBoost / Isolation Forest)
 =========================================================
 Détecte automatiquement les pics de consommation anormaux :
 - Surchauffe
 - Fuite d'énergie
 - Comportement anormal
 
-L'Isolation Forest est adapté aux données IoT non supervisées.
+Le script utilise un XGBoost Supervisé s'il détecte des labels,
+sinon il utilise une approche non supervisée (Isolation Forest).
 """
 
 import os
@@ -79,94 +80,120 @@ def train_anomaly_detector():
     print(f"   📊 Dataset: {len(df)} lignes, {len(features)} features")
     print(f"   📋 Features: {features}\n")
 
-    if df.empty or len(df) < 50:
-        print(f"   ❌ Erreur Critique : Dataset vide ou insuffisant ({len(df)} lignes). Entraînement annulé.")
-        return
-
     X = df[features].fillna(0).values
 
     # Normalisation
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
 
-    with mlflow.start_run(run_name="IsolationForest_greeniot"):
-        # ── Hyperparamètres ───────────────────────────────────
-        params = {
-            "contamination": 0.05,
-            "n_estimators": 200,
-            "max_samples": "auto",
-            "max_features": 1.0,
-            "random_state": 42,
-        }
-        mlflow.log_params(params)
+    has_labels = "anomaly_flag" in df.columns
 
-        # ── Entraînement ─────────────────────────────────────
-        model = IsolationForest(**params)
-        preds = model.fit_predict(X_scaled)
+    if has_labels:
+        print("   🎯 Labels 'anomaly_flag' détectés : Entraînement Supervisé (XGBoost Classifier)")
+        from xgboost import XGBClassifier
+        from sklearn.model_selection import train_test_split
+        
+        y = df["anomaly_flag"].values
+        # Gérer le déséquilibre de classe
+        pos_weight = (len(y) - sum(y)) / max(1, sum(y))
+        
+        X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, stratify=y, random_state=42)
 
-        # -1 = anomalie, 1 = normal
-        n_anomalies = (preds == -1).sum()
-        n_normal = (preds == 1).sum()
-        anomaly_rate = n_anomalies / len(preds) * 100
+        with mlflow.start_run(run_name="XGBoost_Anomaly_Supervised"):
+            params = {
+                "n_estimators": 100,
+                "max_depth": 6,
+                "learning_rate": 0.1,
+                "scale_pos_weight": pos_weight,
+                "random_state": 42,
+            }
+            mlflow.log_params(params)
 
-        # Scores d'anomalie (plus négatif = plus anormal)
-        scores = model.decision_function(X_scaled)
+            model = XGBClassifier(**params)
+            model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)
 
-        # ── Métriques ────────────────────────────────────────
-        mlflow.log_metrics({
-            "n_anomalies_detected": int(n_anomalies),
-            "n_normal": int(n_normal),
-            "anomaly_rate_pct": round(anomaly_rate, 2),
-            "mean_anomaly_score": float(scores[preds == -1].mean()) if n_anomalies > 0 else 0,
-            "mean_normal_score": float(scores[preds == 1].mean()),
-        })
+            preds = model.predict(X_scaled)
+            scores = model.predict_proba(X_scaled)[:, 1] # Probabilité d'être anomalie
+            
+            n_anomalies = int(sum(preds))
+            anomaly_rate = n_anomalies / len(preds) * 100
 
-        # ── Comparaison avec anomaly_flag existant ───────────
-        if "anomaly_flag" in df.columns:
             true_labels = df["anomaly_flag"].values
-            pred_labels = (preds == -1).astype(int)
-
-            report = classification_report(true_labels, pred_labels, output_dict=True)
+            report = classification_report(true_labels, preds, output_dict=True)
+            
             mlflow.log_metrics({
+                "n_anomalies_detected": n_anomalies,
+                "anomaly_rate_pct": round(anomaly_rate, 2),
                 "precision": report["1"]["precision"] if "1" in report else 0,
                 "recall": report["1"]["recall"] if "1" in report else 0,
                 "f1_score": report["1"]["f1-score"] if "1" in report else 0,
             })
 
-            cm = confusion_matrix(true_labels, pred_labels)
+            cm = confusion_matrix(true_labels, preds)
             if cm.shape == (2, 2):
                 fp_rate = cm[0, 1] / max(1, cm[0, 0] + cm[0, 1]) * 100
                 mlflow.log_metric("false_positive_rate_pct", round(fp_rate, 2))
 
-            print("   📊 Classification Report :")
-            print(classification_report(true_labels, pred_labels,
-                                        target_names=["Normal", "Anomalie"]))
+            print("   📊 Classification Report (XGBoost Supervisé) :")
+            print(classification_report(true_labels, preds, target_names=["Normal", "Anomalie"]))
 
-        # ── Sauvegarde ───────────────────────────────────────
-        mlflow.sklearn.log_model(model, "isolation_forest")
+            mlflow.sklearn.log_model(model, "xgboost_anomaly")
+            model_type = "supervised_xgboost"
 
-        os.makedirs(MODEL_DIR, exist_ok=True)
-        model_path = os.path.join(MODEL_DIR, "anomaly_detector.pkl")
-        joblib.dump({
-            "model": model,
-            "scaler": scaler,
-            "features": features,
-            "params": params,
-        }, model_path)
+    else:
+        print("   🕵️‍♂️ Aucun label détecté : Entraînement Non-Supervisé (Isolation Forest)")
+        with mlflow.start_run(run_name="IsolationForest_greeniot"):
+            params = {
+                "contamination": 0.05,
+                "n_estimators": 200,
+                "max_samples": "auto",
+                "max_features": 1.0,
+                "random_state": 42,
+            }
+            mlflow.log_params(params)
 
-        # ── Annoter le DataFrame avec les prédictions ────────
-        df["if_anomaly"] = (preds == -1).astype(int)
-        df["anomaly_score"] = scores
-        anomaly_df = df[df["if_anomaly"] == 1]
+            model = IsolationForest(**params)
+            preds_if = model.fit_predict(X_scaled)
+            
+            # Convertir -1/1 en 1/0
+            preds = (preds_if == -1).astype(int)
+            scores = -model.decision_function(X_scaled) # Plus c'est positif, plus c'est anormal
+            
+            n_anomalies = int(sum(preds))
+            anomaly_rate = n_anomalies / len(preds) * 100
+            
+            mlflow.log_metrics({
+                "n_anomalies_detected": n_anomalies,
+                "anomaly_rate_pct": round(anomaly_rate, 2),
+            })
+            
+            mlflow.sklearn.log_model(model, "isolation_forest")
+            model_type = "unsupervised_isolation_forest"
 
-        # Export des anomalies pour le rapport
-        report_path = os.path.join(DATA_DIR, "anomalies_detected.csv")
-        anomaly_df.to_csv(report_path, index=False)
+    # ── Sauvegarde ───────────────────────────────────────
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    model_path = os.path.join(MODEL_DIR, "anomaly_detector.pkl")
+    joblib.dump({
+        "model": model,
+        "scaler": scaler,
+        "features": features,
+        "params": params,
+        "type": model_type
+    }, model_path)
 
-        print(f"   ✅ Anomalies détectées : {n_anomalies} / {len(preds)} "
-              f"({anomaly_rate:.1f}%)")
-        print(f"   📂 Modèle sauvé : {model_path}")
-        print(f"   📄 Anomalies exportées : {report_path}")
+    # ── Annoter le DataFrame avec les prédictions ────────
+    df["if_anomaly"] = preds
+    df["anomaly_score"] = scores
+    anomaly_df = df[df["if_anomaly"] == 1]
+
+    # Export des anomalies pour le rapport
+    report_path = os.path.join(DATA_DIR, "anomalies_detected.csv")
+    anomaly_df.to_csv(report_path, index=False)
+
+    print(f"   ✅ Anomalies détectées : {n_anomalies} / {len(preds)} "
+          f"({anomaly_rate:.1f}%)")
+    print(f"   📂 Modèle sauvé : {model_path}")
+    print(f"   📄 Anomalies exportées : {report_path}")
 
 
 if __name__ == "__main__":

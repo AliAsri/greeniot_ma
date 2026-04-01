@@ -49,7 +49,7 @@ La gestion de la donnée repose sur le standard de l'industrie : l'Architecture 
 ### Intelligence Artificielle (Machine Learning)
 - **PyTorch (Deep Learning)** : Exploité pour construire des réseaux de Neurones Récurrents (LSTM) qui excellent dans la prédiction des contextes horaires à long terme.
 - **XGBoost (Ensemble Learning)** : Utilisé comme *baseline* haute-performance pour des prédictions brutes très fiables, et l'extraction de *Feature Importance*.
-- **Scikit-Learn (Isolation Forest)** : Algorithme employé dans la détection d'anomalies non-supervisée (Serveur qui surchauffe silencieusement).
+- **XGBoost Classifier (Supervisé)** : Algorithme déployé récemment en remplacement d'Isolation Forest pour la détection d'anomalies d'infrastructure avec un F1-Score ultra précis (Serveur qui surchauffe silencieusement).
 - **MLflow** : Plateforme de MLOps de suivi (tracking) du cycle de vie des modèles, pour enregistrer les paramètres, métriques (MAE, R2, RMSE) et centraliser le registre des modèles.
 
 ### Frontend (Application Utilisateur)
@@ -77,7 +77,7 @@ Ici, les pipelines transforment le Lakehouse sous format transactionnel Delta.
 ### `04_ml/`
 Le cerveau mathématique de la plateforme. Tous les entraînements utilisent **MLflow** en arrière-plan (qui tourne sur `localhost:5000`).
 - **`train_prediction.py`** : Script lourd créant deux IA (LSTM et XGBoost). Compilera les prédictions H+3 (15 minutes), vérifiera leurs métriques, et les expédiera vers un fichier "Pickle" global (`models/`).
-- **`train_anomaly.py`** : Entraîne et valide un modèle Isolation Forest capable de flagger automatiquement un relevé IoT s'il présente une dimension anormale entre Energie et Température.
+- **`train_anomaly.py`** : Entraîne et valide un puissant classifieur XGBoost ("XGBoost Supervisé") capable de flagger automatiquement un relevé IoT s'il présente une dimension anormale entre Energie et Température.
 - **`optimize_load.py`** : Un ordonnanceur customisé qui croise la météo Open-Meteo (Irradiation solaire locale) et la durée prévue des "Tâches Batch" pour décaler ces dernières lors des pics de production électrique sans carbone (Green Shift).
 
 ### `05_dashboard/`
