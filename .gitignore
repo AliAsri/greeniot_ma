@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Data files (generated)
+data/
+datasets/
+01_simulation/datasets/
+models/
+*.parquet
+*.csv
+*.txt
+*.pkl
+
+# Environment
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# MLflow
+mlruns/
+mlartifacts/
+
+# Spark
+spark-warehouse/
+metastore_db/
+derby.log
+
+# Docker
+docker-compose.override.yml
