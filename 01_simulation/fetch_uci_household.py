@@ -1,150 +1,230 @@
 """
 GreenIoT-MA — UCI Household Power Consumption Loader
 =======================================================
-Charge et prépare le dataset UCI Individual Household Electric
-Power Consumption pour enrichir le pipeline GreenIoT-MA.
+Charge le dataset UCI Individual Household Electric Power Consumption
+depuis le chemin défini dans .env (variable UCI_DATASET).
 
-Source : https://archive.ics.uci.edu/dataset/235
-Fichier attendu : datasets/household_power_consumption/household_power_consumption.txt
+Colonnes du dataset UCI (séparateur ';') :
+  Date;Time;Global_active_power;Global_reactive_power;
+  Voltage;Global_intensity;Sub_metering_1;Sub_metering_2;Sub_metering_3
+
+Mapping vers GreenIoT-MA (format Bronze servers) :
+  Global_active_power (kW)   → power_kw   (consommation rack)
+  Global_intensity (A)       → cpu_pct    (charge CPU normalisée)
+  Sub_metering_1 (Wh)        → ram_pct    (charge RAM proxy)
+  Voltage (V) + power        → temp_c     (température estimée)
+
+Usage :
+    python fetch_uci_household.py                  # affiche stats + sauvegarde
+    from fetch_uci_household import load_uci_as_servers  # intégration pipeline
 """
 
 import os
+import sys
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
+from dotenv import load_dotenv
 
+load_dotenv()
 
-DATASET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "datasets")
-UCI_FILE = os.path.join(
-    DATASET_DIR, "household_power_consumption", "household_power_consumption.txt"
+# ── Chemins ───────────────────────────────────────────────────────────────────
+UCI_FILE   = os.getenv(
+    "UCI_DATASET",
+    r"C:\Users\ALI\Downloads\individual+household+electric+power+consumption\household_power_consumption.txt"
 )
-OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+OUTPUT_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data"
+)
 
 
-def load_uci_dataset() -> pd.DataFrame:
+# ══════════════════════════════════════════════════════════════════════════════
+# Chargement brut
+# ══════════════════════════════════════════════════════════════════════════════
+
+def load_uci_raw(sample_days: int = None) -> pd.DataFrame:
     """
-    Charge le dataset UCI Household Electric Power Consumption.
+    Charge le dataset UCI brut.
 
-    Colonnes du dataset :
-    - Date, Time
-    - Global_active_power (kW)
-    - Global_reactive_power (kW)
-    - Voltage (V)
-    - Global_intensity (A)
-    - Sub_metering_1, Sub_metering_2, Sub_metering_3 (Wh)
+    Args:
+        sample_days: Si spécifié, ne charge que les N derniers jours du dataset
+                     (utile pour les tests rapides — le fichier complet = 2M lignes).
 
     Returns:
-        DataFrame nettoyé et prêt pour l'intégration
+        DataFrame avec colonnes UCI originales + colonne 'timestamp'.
     """
     if not os.path.exists(UCI_FILE):
-        print(f"   ⚠️  Fichier UCI non trouvé : {UCI_FILE}")
-        print("   💡 Téléchargez-le depuis : https://archive.ics.uci.edu/dataset/235")
-        return pd.DataFrame()
+        raise FileNotFoundError(
+            f"Dataset UCI introuvable : {UCI_FILE}\n"
+            f"Vérifiez la variable UCI_DATASET dans .env"
+        )
 
-    print(f"   📂 Chargement : {UCI_FILE}")
+    print(f"   📂 Chargement UCI depuis : {UCI_FILE}")
+    print(f"      Taille fichier : {os.path.getsize(UCI_FILE) / 1e6:.1f} Mo")
+
     df = pd.read_csv(
         UCI_FILE,
         sep=";",
         low_memory=False,
         na_values=["?"],
+        header=None,   # La première ligne est déjà les données (pas d'entête propre)
     )
 
-    # Parser la date et l'heure
+    # Le fichier UCI n'a pas d'entête dans certaines versions — on gère les deux cas
+    if df.iloc[0, 0] == "Date":
+        df.columns = df.iloc[0]
+        df = df.iloc[1:].reset_index(drop=True)
+    else:
+        df.columns = [
+            "Date", "Time",
+            "Global_active_power", "Global_reactive_power",
+            "Voltage", "Global_intensity",
+            "Sub_metering_1", "Sub_metering_2", "Sub_metering_3",
+        ]
+
+    # Parser timestamp
     df["timestamp"] = pd.to_datetime(
-        df["Date"] + " " + df["Time"],
+        df["Date"].astype(str) + " " + df["Time"].astype(str),
         format="%d/%m/%Y %H:%M:%S",
         errors="coerce",
     )
     df = df.dropna(subset=["timestamp"])
-    df = df.drop(columns=["Date", "Time"])
+    df = df.drop(columns=["Date", "Time"], errors="ignore")
 
-    # Convertir les colonnes numériques
-    numeric_cols = [
+    # Conversion numérique
+    num_cols = [
         "Global_active_power", "Global_reactive_power",
         "Voltage", "Global_intensity",
         "Sub_metering_1", "Sub_metering_2", "Sub_metering_3",
     ]
-    for col in numeric_cols:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
+    for col in num_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # Supprimer les lignes avec trop de NaN
-    df = df.dropna(thresh=5)
+    # Supprimer les lignes avec trop de valeurs manquantes
+    df = df.dropna(thresh=5).sort_values("timestamp").reset_index(drop=True)
 
-    # Trier par timestamp
-    df = df.sort_values("timestamp").reset_index(drop=True)
+    # Filtrage optionnel sur N jours
+    if sample_days is not None:
+        cutoff = df["timestamp"].max() - timedelta(days=sample_days)
+        df = df[df["timestamp"] >= cutoff].reset_index(drop=True)
 
-    print(f"   ✅ {len(df)} enregistrements chargés ({df['timestamp'].min()} → {df['timestamp'].max()})")
+    print(f"   ✅ {len(df):,} lignes chargées")
+    print(f"      Période : {df['timestamp'].min()} → {df['timestamp'].max()}")
+    print(f"      Puissance moy. : {df['Global_active_power'].mean():.3f} kW")
+    print(f"      Puissance max  : {df['Global_active_power'].max():.3f} kW")
     return df
 
 
-def prepare_for_greeniot(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Transforme les données UCI pour qu'elles soient compatibles
-    avec le pipeline GreenIoT-MA (format serveur).
+# ══════════════════════════════════════════════════════════════════════════════
+# Transformation → format GreenIoT Bronze (servers)
+# ══════════════════════════════════════════════════════════════════════════════
 
-    Mapping :
-    - Global_active_power → power_kw
-    - Global_intensity → cpu_pct (normalisé)
-    - Voltage → temp_c (mappé sur plage réaliste)
+def load_uci_as_servers(
+    n_racks: int = 3,
+    sample_days: int = 7,
+    target_timestamps: pd.DatetimeIndex = None,
+) -> pd.DataFrame:
     """
+    Charge UCI et le transforme en données de serveurs GreenIoT-MA.
+
+    Stratégie de mapping :
+    - La consommation UCI (maison) est re-scalée pour représenter
+      un rack de serveurs (plage : 30–120 kW).
+    - Chaque rack is une interpolation/variation légère de la série UCI.
+    - Le pattern horaire UCI (circadien résidentiel) est conservé car
+      il est corrélé au trafic web (forte charge le soir).
+
+    Args:
+        n_racks: Nombre de racks à simuler depuis la même source UCI
+        sample_days: Jours de données à charger
+        target_timestamps: Si fourni, rééchantillonne aux timestamps voulus
+
+    Returns:
+        DataFrame format Bronze servers compatible avec le pipeline GreenIoT
+    """
+    df = load_uci_raw(sample_days=sample_days)
     if df.empty:
-        return df
+        return pd.DataFrame()
 
-    result = pd.DataFrame()
-    result["sensor_id"] = "uci_household"
-    result["type"] = "server"
-    result["timestamp"] = df["timestamp"].dt.strftime("%Y-%m-%dT%H:%M:%S")
+    # Normaliser la puissance UCI (max ~14kW maison → racks serveurs 30-120kW)
+    p = df["Global_active_power"].fillna(df["Global_active_power"].median())
+    p_norm = (p - p.min()) / (p.max() - p.min() + 1e-9)  # 0–1
 
-    # Mapper les métriques vers le format GreenIoT
-    result["power_kw"] = df["Global_active_power"].clip(0, 200)
-    result["cpu_pct"] = (df["Global_intensity"] / df["Global_intensity"].max() * 100).clip(0, 100).round(1)
-    result["ram_pct"] = (df["Sub_metering_1"].fillna(0) / df["Sub_metering_1"].max() * 80 + 20).clip(0, 100).round(1)
-    result["temp_c"] = (35 + df["Global_active_power"] * 3 + np.random.randn(len(df)) * 1).clip(25, 80).round(1)
+    rng = np.random.default_rng(42)
+    records = []
 
-    result = result.dropna()
+    rack_ids = [f"rack_A{i+1}" for i in range(n_racks)]
+    for i, rack_id in enumerate(rack_ids):
+        # Variation légère par rack : décalage de phase + bruit différent
+        noise = rng.normal(0, 0.02, len(df))
+        scale_factor = rng.uniform(0.85, 1.15)  # ±15% entre racks
+        power_rack = (30 + p_norm * 90 * scale_factor + noise * 5).clip(20, 130).round(2)
+
+        # CPU corrélé à la puissance (plus de charge = plus de CPU)
+        cpu = (p_norm * 70 + 15 + rng.normal(0, 3, len(df))).clip(5, 98).round(1)
+
+        # RAM légèrement corrélée au CPU avec inertie
+        ram_base = pd.Series(cpu).rolling(10, min_periods=1).mean().values
+        ram = (ram_base * 0.6 + 30 + rng.normal(0, 2, len(df))).clip(10, 95).round(1)
+
+        # Température : dépend de la puissance et du CPU
+        temp = (35 + power_rack * 0.15 + cpu * 0.08 + rng.normal(0, 0.8, len(df))).clip(28, 75).round(1)
+
+        rack_df = pd.DataFrame({
+            "sensor_id": rack_id,
+            "type": "server",
+            "timestamp": df["timestamp"].dt.strftime("%Y-%m-%dT%H:%M:%S"),
+            "ts": df["timestamp"],
+            "power_kw": power_rack,
+            "cpu_pct": cpu,
+            "ram_pct": ram,
+            "temp_c": temp,
+        })
+        records.append(rack_df)
+
+    result = pd.concat(records, ignore_index=True)
+
+    # Rééchantillonnage optionnel (pour aligner sur interval_min)
+    if target_timestamps is not None:
+        result = result.set_index("ts")
+        result = result.reindex(target_timestamps, method="nearest", tolerance="5min")
+        result = result.reset_index().rename(columns={"index": "ts"})
+        result = result.dropna(subset=["power_kw"])
+
+    print(f"\n   🖥️  Racks générés : {n_racks} × {len(df):,} points = {len(result):,} lignes total")
     return result
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Point d'entrée standalone
+# ══════════════════════════════════════════════════════════════════════════════
+
 def main():
-    """Charge le dataset UCI et le prépare pour GreenIoT-MA."""
-    print("🌿 GreenIoT-MA — Intégration du dataset UCI\n")
+    """Charge UCI, affiche les stats et sauvegarde les fichiers."""
+    print("🌿 GreenIoT-MA — Intégration du dataset UCI Household\n")
 
-    # Charger
-    df = load_uci_dataset()
-    if df.empty:
-        return
+    df_raw = load_uci_raw(sample_days=7)
+    if df_raw.empty:
+        sys.exit(1)
 
-    # Statistiques
-    print(f"\n   📊 Statistiques UCI :")
-    print(f"      Période        : {df['timestamp'].min()} → {df['timestamp'].max()}")
-    print(f"      Enregistrements: {len(df):,}")
-    print(f"      Puissance moy. : {df['Global_active_power'].mean():.2f} kW")
-    print(f"      Puissance max  : {df['Global_active_power'].max():.2f} kW")
+    df_servers = load_uci_as_servers(n_racks=3, sample_days=7)
 
-    # Préparer pour GreenIoT
-    greeniot_df = prepare_for_greeniot(df)
-    print(f"\n   🔄 Conversion vers format GreenIoT : {len(greeniot_df)} lignes")
-
-    # Sauvegarder
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    # Dataset UCI brut (pour référence)
-    uci_path = os.path.join(OUTPUT_DIR, "uci_household_raw.parquet")
-    df.to_parquet(uci_path, index=False)
-    print(f"   💾 UCI brut → {uci_path}")
+    # Sauvegardes
+    raw_path     = os.path.join(OUTPUT_DIR, "uci_household_raw.parquet")
+    bronze_path  = os.path.join(OUTPUT_DIR, "raw_servers.parquet")
 
-    # Dataset au format GreenIoT (Bronze)
-    greeniot_path = os.path.join(OUTPUT_DIR, "uci_as_bronze.parquet")
-    greeniot_df.to_parquet(greeniot_path, index=False)
-    print(f"   💾 UCI→GreenIoT → {greeniot_path}")
+    df_raw.to_parquet(raw_path, index=False)
+    print(f"\n   💾 UCI brut     → {raw_path}")
 
-    # Échantillon pour vérification
-    print(f"\n   🔍 Échantillon (5 premières lignes) :")
-    print(greeniot_df.head().to_string(index=False))
+    df_servers.to_parquet(bronze_path, index=False)
+    print(f"   💾 Bronze srv   → {bronze_path}")
 
-    print(f"\n{'═' * 50}")
+    print(f"\n{'═' * 60}")
     print("   ✅ Dataset UCI intégré avec succès !")
-    print(f"{'═' * 50}")
+    print(f"{'═' * 60}")
 
 
 if __name__ == "__main__":

@@ -189,6 +189,8 @@ def train_lstm(X_tr, y_tr, X_val, y_val, features, scaler):
 
         best_mae  = float("inf")
         n_batches = len(tr_ds)
+        # Initialisation défensive pour le cas EPOCHS=0
+        mae = rmse = r2 = mape_val = 0.0
 
         for epoch in epoch_iter:
             # ── Train ──────────────────────────────────────────
@@ -380,8 +382,25 @@ def train():
     scaler = MinMaxScaler()
     scaled = scaler.fit_transform(df[features].ffill().bfill())
 
-    # ── Séquences glissantes ──────────────────────────────────
-    X, y  = create_sequences(scaled, WINDOW_SIZE, HORIZON)
+    # ── Séquences glissantes PAR CAPTEUR (pas global) ────────────────
+    # IMPORTANT : générer les séquences par capteur évite les séquences
+    # parasites qui traversent la frontière entre rack_A1 et rack_A2.
+    all_X, all_y = [], []
+    for sid in df["sensor_id"].unique():
+        sub = df[df["sensor_id"] == sid][features].ffill().bfill().values
+        sub_scaled = scaler.transform(sub)
+        X_sid, y_sid = create_sequences(sub_scaled, WINDOW_SIZE, HORIZON)
+        if len(X_sid) > 0:
+            all_X.append(X_sid)
+            all_y.append(y_sid)
+
+    if not all_X:
+        print("   ❌ Pas assez de données pour créer des séquences. Arrêt.")
+        return
+
+    X = np.concatenate(all_X)
+    y = np.concatenate(all_y)
+
     split = int(0.8 * len(X))
     X_tr, X_val = X[:split], X[split:]
     y_tr, y_val = y[:split], y[split:]

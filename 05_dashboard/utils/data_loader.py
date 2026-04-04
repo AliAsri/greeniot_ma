@@ -169,12 +169,11 @@ def load_bronze_solar():
             df = dt.to_pyarrow_table().to_pandas()
             
         df["ts"] = pd.to_datetime(df["timestamp"], format="mixed")
-        df = df.sort_values("ts") # IMPORTANT: Sortir temporellement pour enlever les 'dents de scie'
-        if df.empty:
-            pass
-        elif len(df) > 1000 and "timestamp" in df.columns:
-            df = df.tail(1000)
-            
+        df = df.sort_values("ts")
+        # Garder les 24h complètes (288 pts × 2 capteurs × 5min = 576 lignes max)
+        if len(df) > 576:
+            cutoff_24h = df["ts"].max() - pd.Timedelta(hours=24)
+            df = df[df["ts"] >= cutoff_24h]
         return df
     except Exception as e:
         import traceback
@@ -182,7 +181,10 @@ def load_bronze_solar():
         if os.path.exists(path):
             df = pd.read_parquet(path)
             df["ts"] = pd.to_datetime(df["timestamp"], format="mixed", errors="coerce")
-            return df.sort_values("ts").tail(1000)
+            df = df.sort_values("ts")
+            # Garder les 24 dernières heures pour voir le pic solaire
+            cutoff_24h = df["ts"].max() - pd.Timedelta(hours=24)
+            return df[df["ts"] >= cutoff_24h]
         return _generate_demo_solar_data()
 
 @st.cache_data(ttl=900)
@@ -253,28 +255,32 @@ def _generate_demo_server_data(n: int = 500):
         "power_delta": np.random.randn(n) * 2,
     })
 
-def _generate_demo_solar_data(n: int = 500):
-    """Fallback : données solaires séquentielles propres (sans zigzags)."""
-    ts = pd.date_range(end=datetime.now(), periods=n//2, freq="5min")
+def _generate_demo_solar_data():
+    """Fallback : données solaires sur 24h ancrées à minuit (toujours visible le pic solaire)."""
+    # Ancrer sur minuit du jour courant → la cloche solaire est toujours visible
+    today_midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    ts = pd.date_range(start=today_midnight, periods=288, freq="5min")  # 288 × 5min = 24h
     hours = ts.hour + ts.minute / 60
+    # Modèle physique Dakhla : lever 6h, coucher 18h
     irradiance = np.maximum(0, np.sin(np.pi * (hours - 6) / 12))
+    rng = np.random.default_rng(42)
 
     df1 = pd.DataFrame({
         "ts": ts,
         "timestamp": ts.astype(str),
-        "sensor_id": "solar_panel_01",
-        "production_kw": (500 * irradiance * np.random.uniform(0.9, 1.0, len(ts))).round(2),
-        "irradiance_wm2": (irradiance * 1000).round(1),
-        "panel_temp_c": (25 + irradiance * 20 + np.random.randn(len(ts)) * 1.5).round(1),
+        "sensor_id": "solar_dakhla_01",
+        "production_kw": (500 * irradiance * rng.uniform(0.88, 1.0, len(ts))).round(2),
+        "irradiance_wm2": (irradiance * 1000 * rng.uniform(0.95, 1.05, len(ts))).round(1),
+        "panel_temp_c": (25 + irradiance * 20 + rng.standard_normal(len(ts)) * 1.5).round(1),
     })
-    
+
     df2 = pd.DataFrame({
         "ts": ts,
         "timestamp": ts.astype(str),
-        "sensor_id": "solar_panel_02",
-        "production_kw": (480 * irradiance * np.random.uniform(0.9, 1.0, len(ts))).round(2),
-        "irradiance_wm2": (irradiance * 1000).round(1),
-        "panel_temp_c": (25 + irradiance * 20 + np.random.randn(len(ts)) * 1.5).round(1),
+        "sensor_id": "solar_dakhla_02",
+        "production_kw": (480 * irradiance * rng.uniform(0.88, 1.0, len(ts))).round(2),
+        "irradiance_wm2": (irradiance * 1000 * rng.uniform(0.95, 1.05, len(ts))).round(1),
+        "panel_temp_c": (25 + irradiance * 20 + rng.standard_normal(len(ts)) * 1.5).round(1),
     })
 
     return pd.concat([df1, df2]).sort_values("ts").reset_index(drop=True)

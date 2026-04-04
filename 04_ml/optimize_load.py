@@ -48,18 +48,30 @@ def find_solar_peaks(solar_df: pd.DataFrame, window_hours: int = 2) -> dict:
     solar_df = solar_df.dropna(subset=["ts"])
     solar_df = solar_df.set_index("ts").sort_index()
 
+    # CORRECTION : Ne regarder que les TOUTES DERNIÈRES 24 HEURES de données.
+    # Sinon, idxmax() reste toujours bloqué sur le plus gros pic historique de toute l'année !
+    if not solar_df.empty:
+        last_24h = solar_df.index.max() - timedelta(hours=24)
+        solar_df = solar_df[solar_df.index >= last_24h]
+
     # Rolling sum pour trouver les meilleures fenêtres
     window_str = f"{window_hours * 60}min"
     solar_df["window_sum"] = solar_df["production_kw"].rolling(window_str).sum()
 
     best_idx = solar_df["window_sum"].idxmax()
+    
+    # Si le dataframe est vide (problème source), fallback sécurisé
+    if pd.isna(best_idx):
+        best_idx = datetime.now()
+        
     best_start = best_idx - timedelta(hours=window_hours)
     best_end = best_idx
 
     return {
+        "optimal_date": best_idx.strftime("%Y-%m-%d"),
         "optimal_start": best_start.strftime("%H:%M"),
         "optimal_end": best_end.strftime("%H:%M"),
-        "expected_kw": round(solar_df["window_sum"].max() / (window_hours * 12), 1),
+        "expected_kw": round(solar_df["window_sum"].max() / max(1, (window_hours * 12)), 1) if not solar_df.empty else 0,
         "peak_timestamp": best_idx.isoformat(),
     }
 
@@ -131,7 +143,7 @@ def generate_daily_report(solar_df: pd.DataFrame, tasks: list[dict]) -> dict:
     pct_solar = len(solar_tasks) / max(1, len(schedule)) * 100
 
     return {
-        "date": datetime.now().strftime("%Y-%m-%d"),
+        "date": peaks.get("optimal_date", datetime.now().strftime("%Y-%m-%d")),
         "optimal_window": f"{peaks['optimal_start']} — {peaks['optimal_end']}",
         "expected_solar_kw": peaks["expected_kw"],
         "tasks_scheduled": len(schedule),
@@ -149,37 +161,36 @@ def generate_daily_report(solar_df: pd.DataFrame, tasks: list[dict]) -> dict:
 if __name__ == "__main__":
     print("🌿 GreenIoT-MA — Optimiseur de décalage de charge\n")
 
-    # Charger les données solaires depuis MinIO
-    print(f"   📡 Lecture Gold Delta depuis : {GOLD_SOLAR_PATH}")
-    try:
-        dt = DeltaTable(GOLD_SOLAR_PATH, storage_options=STORAGE_OPTIONS)
-        solar_df = dt.to_pandas()
-        
-        # Compatibilité avec le script actuel
-        if "ts" in solar_df.columns and "timestamp" not in solar_df.columns:
-            solar_df["timestamp"] = solar_df["ts"]
-            
-    except Exception as e:
-        print(f"   ⚠️  Erreur Delta ({e}).")
-        print("   🔄 Initialisation de la table Delta Solaire sur MinIO depuis le fichier local...")
-        solar_path = os.path.join(DATA_DIR, "gold_solar.parquet")
+    # Charger les données solaires
+    DEMO_MODE = os.getenv("DEMO_MODE", "true").lower() in ("true", "1", "yes")
+    solar_path = os.path.join(DATA_DIR, "gold_solar.parquet")
+
+    if DEMO_MODE:
+        print(f"   📡 [DEMO_MODE] Lecture locale depuis : {solar_path}")
         if not os.path.exists(solar_path):
-            print(f"   ❌ Fichier local {solar_path} introuvable.")
+            print(f"   ❌ Fichier local introuvable.")
             print("   💡 Lancez d'abord : python 01_simulation/generate_static_dataset.py")
             exit(1)
-            
-        from deltalake.writer import write_deltalake
-        import pyarrow as pa
-        
         solar_df = pd.read_parquet(solar_path)
-        solar_pa = pa.Table.from_pandas(solar_df)
-        
-        write_deltalake(GOLD_SOLAR_PATH, solar_pa, storage_options=STORAGE_OPTIONS)
-        print("   ✅ Table Solaire MinIO créée avec succès !")
-        
         if "ts" in solar_df.columns and "timestamp" not in solar_df.columns:
             solar_df["timestamp"] = solar_df["ts"]
-
+    else:
+        print(f"   📡 Lecture Gold Delta depuis : {GOLD_SOLAR_PATH}")
+        try:
+            dt = DeltaTable(GOLD_SOLAR_PATH, storage_options=STORAGE_OPTIONS)
+            solar_df = dt.to_pandas()
+            if "ts" in solar_df.columns and "timestamp" not in solar_df.columns:
+                solar_df["timestamp"] = solar_df["ts"]
+                
+        except Exception as e:
+            print(f"   ⚠️  Erreur Delta ({e}).")
+            print("   🔄 Fallback transparent sur le fichier local...")
+            if not os.path.exists(solar_path):
+                exit(1)
+            solar_df = pd.read_parquet(solar_path)
+            if "ts" in solar_df.columns and "timestamp" not in solar_df.columns:
+                solar_df["timestamp"] = solar_df["ts"]
+            
     print(f"   📊 Données solaires: {len(solar_df)} enregistrements\n")
 
     # Tâches batch à planifier

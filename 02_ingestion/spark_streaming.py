@@ -11,6 +11,7 @@ from pyspark.sql.types import (
     StructType, StructField, StringType, DoubleType
 )
 import os
+import tempfile
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -72,6 +73,16 @@ schema_cooling = StructType([
     StructField("pue", DoubleType()),
 ])
 
+schema_battery = StructType([
+    StructField("sensor_id", StringType()),
+    StructField("type", StringType()),
+    StructField("timestamp", StringType()),
+    StructField("soc_pct", DoubleType()),
+    StructField("charge_rate_kw", DoubleType()),
+    StructField("voltage_v", DoubleType()),
+    StructField("temp_c", DoubleType()),
+])
+
 
 def write_bronze(df, topic: str, schema: StructType, path_suffix: str):
     """Parse les messages Kafka et écrit en Delta Lake (Bronze)."""
@@ -81,10 +92,12 @@ def write_bronze(df, topic: str, schema: StructType, path_suffix: str):
         .select("d.*") \
         .withColumn("ingestion_ts", current_timestamp())
 
+    chk_base = os.path.join(tempfile.gettempdir(), "greeniot_chk")
+
     return parsed.writeStream \
         .format("delta") \
         .outputMode("append") \
-        .option("checkpointLocation", f"/tmp/chk/{path_suffix}") \
+        .option("checkpointLocation", os.path.join(chk_base, path_suffix)) \
         .start(f"{DELTA_PATH}/{path_suffix}")
 
 
@@ -95,20 +108,22 @@ print(f"   Delta: {DELTA_PATH}\n")
 
 raw = spark.readStream.format("kafka") \
     .option("kafka.bootstrap.servers", KAFKA_SERVERS) \
-    .option("subscribe", "greeniot.servers,greeniot.solar,greeniot.cooling") \
+    .option("subscribe", "greeniot.servers,greeniot.solar,greeniot.cooling,greeniot.battery") \
     .option("startingOffsets", "latest") \
     .option("failOnDataLoss", "false") \
     .load()
 
 # ── Écriture Bronze par type de capteur ───────────────────────
 q_servers = write_bronze(raw, "greeniot.servers", schema_server, "servers")
-q_solar = write_bronze(raw, "greeniot.solar", schema_solar, "solar")
+q_solar   = write_bronze(raw, "greeniot.solar",   schema_solar,  "solar")
 q_cooling = write_bronze(raw, "greeniot.cooling", schema_cooling, "cooling")
+q_battery = write_bronze(raw, "greeniot.battery", schema_battery, "battery")
 
 print("   ✅ Queries streaming démarrées :")
 print("      → greeniot.servers → Bronze/servers")
 print("      → greeniot.solar   → Bronze/solar")
 print("      → greeniot.cooling → Bronze/cooling")
+print("      → greeniot.battery → Bronze/battery")
 print("\n   Ctrl+C pour stopper.\n")
 
 spark.streams.awaitAnyTermination()

@@ -16,18 +16,24 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from utils.data_loader import load_bronze_solar, load_schedule
+from utils.data_loader import load_bronze_solar, load_gold_solar, load_schedule
 from typing import List, Dict
 
 import importlib.util
 
-ml_dir = os.path.join(os.path.dirname(__file__), "..", "..", "04_ml")
-opt_path = os.path.join(ml_dir, "optimize_load.py")
+@st.cache_resource
+def _load_optimize_module():
+    """Charge le module optimize_load une seule fois (cache Streamlit)."""
+    ml_dir = os.path.join(os.path.dirname(__file__), "..", "..", "04_ml")
+    opt_path = os.path.join(ml_dir, "optimize_load.py")
+    spec = importlib.util.spec_from_file_location("optimize_load", opt_path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["optimize_load"] = mod
+    spec.loader.exec_module(mod)
+    return mod
 
-spec = importlib.util.spec_from_file_location("optimize_load", opt_path)
-optimize_module = importlib.util.module_from_spec(spec)
-sys.modules["optimize_load"] = optimize_module
-spec.loader.exec_module(optimize_module)
+
+
 
 def _build_schedule(tasks: list[dict], solar_df: pd.DataFrame) -> pd.DataFrame:
     """Utilise l'algorithme d'optimisation réel basé sur la DataFrame solaire."""
@@ -42,7 +48,8 @@ def _build_schedule(tasks: list[dict], solar_df: pd.DataFrame) -> pd.DataFrame:
             "priority": t.get("priorite", "low").split(" ")[-1].lower()
         })
         
-    real_schedule = optimize_module.schedule_deferred_tasks(mapped_tasks, solar_df)
+    opt_mod = _load_optimize_module()
+    real_schedule = opt_mod.schedule_deferred_tasks(mapped_tasks, solar_df)
     
     # Mapping back to French dashboard columns
     display_sch = []
@@ -63,45 +70,67 @@ def render():
     st.title("☀️ Optimisation de la Charge & Planification Solaire")
     st.caption("Décalage des tâches batch vers les fenêtres de production solaire maximale")
 
+    # Bronze : courbe de production temps réel (données brutes)
     solar_df = load_bronze_solar()
+    # Gold  : données enrichies pour l'algorithme d'optimisation
+    solar_gold_df = load_gold_solar()
+    # Fallback si Gold indisponible
+    if solar_gold_df.empty:
+        solar_gold_df = solar_df
 
     # ── KPIs solaires (AVANT le graphique) ───────────────────
     st.subheader("📡 Production solaire — Site Principal")
 
     c1, c2, c3, c4 = st.columns(4)
     if "production_kw" in solar_df.columns:
-        max_prod   = solar_df["production_kw"].max()
-        avg_prod   = solar_df["production_kw"].mean()
-        total_kwh  = solar_df["production_kw"].sum() * 5 / 60
+        # KPIs sur la fenêtre diurne uniquement (6h–18h) pour éviter de diluer avec les zéros nocturnes
+        solar_day = solar_df[solar_df["ts"].dt.hour.between(6, 18)] if "ts" in solar_df.columns else solar_df
+        solar_day = solar_day if not solar_day.empty else solar_df
+
+        max_prod        = solar_day["production_kw"].max()
+        avg_prod        = solar_day[solar_day["production_kw"] > 0]["production_kw"].mean()
+        total_kwh       = solar_df["production_kw"].sum() * 5 / 60   # Total journée complète
         co2_total_solar = total_kwh * 0.7
 
-        c1.metric("☀️ Production max",  f"{max_prod:.0f} kW")
-        c2.metric("📊 Production moy.", f"{avg_prod:.0f} kW")
-        c3.metric("⚡ Total produit",   f"{total_kwh:.0f} kWh")
-        c4.metric("🌍 CO2 évité",       f"{co2_total_solar:.0f} kg")
+        c1.metric("☀️ Pic de production",  f"{max_prod:.0f} kW", help="Production max observée sur la journée")
+        c2.metric("📊 Moy. diurne",        f"{avg_prod:.0f} kW", help="Moyenne sur les heures d'ensoleillement (6h–18h)")
+        c3.metric("⚡ Total produit",       f"{total_kwh:.0f} kWh", help="Énergie produite sur 24h")
+        c4.metric("🌍 CO2 évité",          f"{co2_total_solar:.0f} kg", help="0.7 kg CO2/kWh évité vs réseau")
 
-    # Courbe de production (après KPIs)
+    # Courbe de production 24h (pour voir le pic solaire même la nuit)
     if "production_kw" in solar_df.columns:
-        plot_solar = solar_df.tail(600).copy() # Augmenté légèrement pour couvrir un trou
-        
-        # Remédier à la "ligne droite nocturne" s'il y a un trou de données : on force des zéros
+        # Afficher les 24h complètes — pas de tail() pour ne pas couper le pic diurne
+        plot_solar = solar_df.copy()
+
+        # Resampling 15min : comble les trous (PC éteint) avec 0.0 kW (nuit = 0 solaire)
         if not plot_solar.empty and "sensor_id" in plot_solar.columns:
-            # Resampling crée des NaN là où la donnée manque (le PC était éteint)
-            plot_solar = plot_solar.set_index("ts").groupby("sensor_id").resample("15min")["production_kw"].mean()
-            # On remplace par 0.0 kW (le solaire s'éteint la nuit)
-            plot_solar = plot_solar.fillna(0.0).reset_index()
-            # Trier pour Plotly
-            plot_solar = plot_solar.sort_values("ts")
+            plot_solar = (
+                plot_solar.set_index("ts")
+                .groupby("sensor_id")
+                .resample("15min")["production_kw"]
+                .mean()
+                .fillna(0.0)
+                .reset_index()
+                .sort_values("ts")
+            )
 
         fig_solar = px.area(
             plot_solar, x="ts", y="production_kw",
             color="sensor_id" if "sensor_id" in plot_solar.columns else None,
-            title="Production solaire (kW) — fenêtre récente",
+            title="Production solaire (kW) — Fenêtre 24h (minuit → minuit)",
             color_discrete_sequence=["#f57c00", "#ffb300"],
         )
         fig_solar.update_layout(
-            template="plotly_white", height=380,
+            template="plotly_white", height=400,
             legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            xaxis_title="Heure",
+            yaxis_title="Production (kW)",
+        )
+        # Ligne verticale : heure actuelle
+        fig_solar.add_vline(
+            x=datetime.now().isoformat(),
+            line_dash="dash", line_color="#546e7a",
+            annotation_text="Maintenant", annotation_position="top left",
         )
         st.plotly_chart(fig_solar, use_container_width=True, config={"displayModeBar": True, "modeBarButtonsToAdd": ["downloadImage"]})
 
@@ -130,7 +159,7 @@ def render():
         {"nom": "Compression Bronze",  "duree": 30, "priorite": "🟢 Low"},
         {"nom": "Sync MinIO",          "duree": 15, "priorite": "🟡 Medium"},
     ]
-    schedule = _build_schedule(tasks, solar_df)
+    schedule = _build_schedule(tasks, solar_gold_df)
 
     if not schedule.empty:
         st.dataframe(schedule, use_container_width=True, hide_index=True)
@@ -232,7 +261,7 @@ def render():
     if not solar_df.empty and "production_kw" in solar_df.columns:
         daily_max = solar_df["production_kw"].max()
         peak_df = solar_df[solar_df["production_kw"] >= daily_max * 0.70]
-        if not peak_df.empty:
+        if not peak_df.empty and "ts" in peak_df.columns:
             peak_start = peak_df["ts"].dt.hour.min()
             peak_end = peak_df["ts"].dt.hour.max()
             fenetre_str = f"{peak_start}h00 — {peak_end}h00"
@@ -241,7 +270,8 @@ def render():
     else:
         fenetre_str = "11:00 — 15:00 (Estimé)"
 
-    st.info(f"""
+    if len(schedule) >= 2:
+        st.info(f"""
     **Fenêtre solaire optimale identifiée par l'IA : {fenetre_str}**
 
     1. 🔄 **{task1_name}** planifié à {schedule.iloc[0]["Début planifié"]} (durée : {task1_dur} min)
@@ -250,3 +280,12 @@ def render():
     4. ⚡ **Réduire le PUE** en synchronisant les charges avec la production photovoltaïque identifiée
     5. 🔋 **Charger les batteries** dans la fenêtre **{fenetre_str}** pour subvenir aux tâches nocturnes
     """)
+    elif len(schedule) == 1:
+        st.info(f"""
+    **Fenêtre solaire optimale identifiée par l'IA : {fenetre_str}**
+
+    1. 🔄 **{task1_name}** planifié à {schedule.iloc[0]["Début planifié"]} (durée : {task1_dur} min)
+    2. 🔋 **Charger les batteries** dans la fenêtre **{fenetre_str}** pour subvenir aux tâches nocturnes
+    """)
+    else:
+        st.warning("⚠️ Données solaires insuffisantes pour générer des recommandations de planification.")
