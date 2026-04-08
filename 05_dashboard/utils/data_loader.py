@@ -10,8 +10,39 @@ import os
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-import streamlit as st
-from deltalake import DeltaTable
+from dotenv import load_dotenv
+
+try:
+    import streamlit as st
+except Exception:
+    class _StreamlitStub:
+        @staticmethod
+        def cache_data(ttl=None):
+            def decorator(func):
+                return func
+
+            return decorator
+
+        @staticmethod
+        def warning(msg):
+            return None
+
+        @staticmethod
+        def info(msg):
+            return None
+
+        @staticmethod
+        def error(msg):
+            return None
+
+    st = _StreamlitStub()
+
+try:
+    from deltalake import DeltaTable
+except ImportError:
+    DeltaTable = None
+
+load_dotenv()
 
 DATA_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
@@ -23,15 +54,27 @@ _BRONZE_COLUMNS = [
     "timestamp", "sensor_id", "power_kw", "cpu_pct", "ram_pct", "temp_c", "pue"
 ]
 
+
+def _get_delta_table(path):
+    if DeltaTable is None:
+        raise RuntimeError(
+            "deltalake is not installed. Install project requirements to enable live Delta reads."
+        )
+    return DeltaTable(path, storage_options=get_storage_options())
+
+
+def _notify_fallback(label: str, error: Exception):
+    st.warning(f"{label} unavailable, falling back to local/demo data. Reason: {error}")
+
 def get_storage_options():
     return {
-        "AWS_ACCESS_KEY_ID": "greeniot",
-        "AWS_SECRET_ACCESS_KEY": "greeniot2030",
-        "AWS_ENDPOINT_URL": "http://localhost:9000",
-        "AWS_REGION": "us-east-1",
-        "AWS_ALLOW_HTTP": "true",
-        "AWS_S3_ALLOW_UNSAFE_RENAME": "true",
-        "AWS_S3_FORCE_PATH_STYLE": "true", # Obligatoire pour MinIO en local
+        "AWS_ACCESS_KEY_ID": os.getenv("MINIO_ACCESS_KEY", "greeniot"),
+        "AWS_SECRET_ACCESS_KEY": os.getenv("MINIO_SECRET_KEY", "greeniot2030"),
+        "AWS_ENDPOINT_URL": os.getenv("MINIO_ENDPOINT", "http://localhost:9000"),
+        "AWS_REGION": os.getenv("AWS_REGION", "us-east-1"),
+        "AWS_ALLOW_HTTP": os.getenv("AWS_ALLOW_HTTP", "true"),
+        "AWS_S3_ALLOW_UNSAFE_RENAME": os.getenv("AWS_S3_ALLOW_UNSAFE_RENAME", "true"),
+        "AWS_S3_FORCE_PATH_STYLE": os.getenv("AWS_S3_FORCE_PATH_STYLE", "true"), # Obligatoire pour MinIO en local
     }
 
 def _get_s3_path(env_var, default_path, suffix):
@@ -46,7 +89,7 @@ def _load_bronze_filtered(hours_back=2):
     l'intégralité de la table Bronze dans la mémoire.
     """
     path = _get_s3_path("DELTA_BRONZE", "s3a://greeniot/bronze", "/servers")
-    dt = DeltaTable(path, storage_options=get_storage_options())
+    dt = _get_delta_table(path)
     
     cutoff = (datetime.utcnow() - timedelta(hours=hours_back)).isoformat()
     
@@ -107,18 +150,16 @@ def load_bronze_servers():
         if df.empty:
             st.info("ℹ️ Aucune donnée Bronze récente (< 2h). Chargement des 1000 dernières lignes...")
             # Fallback : charger les dernières lignes si pas de données récentes
-            dt = DeltaTable(
-                _get_s3_path("DELTA_BRONZE", "s3a://greeniot/bronze", "/servers"),
-                storage_options=get_storage_options()
+            dt = _get_delta_table(
+                _get_s3_path("DELTA_BRONZE", "s3a://greeniot/bronze", "/servers")
             )
             available_cols = [f.name for f in dt.schema().fields]
             columns = [c for c in _BRONZE_COLUMNS if c in available_cols]
             df = dt.to_pyarrow_table(columns=columns).to_pandas().tail(1000)
-        
+
         return _enrich_bronze(df)
     except Exception as e:
-        import traceback
-        st.error(f"Erreur MinIO/Delta : {str(e)}")
+        _notify_fallback("Bronze live source", e)
         path = os.path.join(DATA_DIR, "raw_servers.parquet")
         if os.path.exists(path):
             df = pd.read_parquet(path)
@@ -136,10 +177,11 @@ def load_silver_servers():
     """Charge les données Silver des serveurs."""
     path = _get_s3_path("DELTA_SILVER", "s3a://greeniot/silver", "/servers")
     try:
-        df = DeltaTable(path, storage_options=get_storage_options()).to_pandas()
+        df = _get_delta_table(path).to_pandas()
         df["ts"] = pd.to_datetime(df["ts"]) if "ts" in df.columns else pd.to_datetime(df["timestamp"])
         return df
     except Exception as e:
+        _notify_fallback("Silver servers", e)
         path = os.path.join(DATA_DIR, "silver_servers_latest.parquet")
         if os.path.exists(path):
             df = pd.read_parquet(path)
@@ -152,7 +194,7 @@ def load_bronze_solar():
     """Charge les données Bronze solaires (24 dernières heures pour l'optimiseur)."""
     path = _get_s3_path("DELTA_BRONZE", "s3a://greeniot/bronze", "/solar")
     try:
-        dt = DeltaTable(path, storage_options=get_storage_options())
+        dt = _get_delta_table(path)
         # L'optimiseur a besoin de voir la journée entière (24h) pour trouver le pic d'ensoleillement
         cutoff = (datetime.utcnow() - timedelta(hours=24)).isoformat()
         
@@ -176,7 +218,7 @@ def load_bronze_solar():
             df = df[df["ts"] >= cutoff_24h]
         return df
     except Exception as e:
-        import traceback
+        _notify_fallback("Bronze solar", e)
         path = os.path.join(DATA_DIR, "raw_solar.parquet")
         if os.path.exists(path):
             df = pd.read_parquet(path)
@@ -192,10 +234,11 @@ def load_gold_servers():
     """Charge les données Gold des serveurs."""
     path = _get_s3_path("DELTA_GOLD", "s3a://greeniot/gold", "/servers")
     try:
-        df = DeltaTable(path, storage_options=get_storage_options()).to_pandas()
+        df = _get_delta_table(path).to_pandas()
         df["ts"] = pd.to_datetime(df["ts"]) if "ts" in df.columns else pd.to_datetime(df["timestamp"])
         return df
     except Exception as e:
+        _notify_fallback("Gold servers", e)
         path = os.path.join(DATA_DIR, "gold_servers.parquet")
         if os.path.exists(path):
             df = pd.read_parquet(path)
@@ -208,10 +251,11 @@ def load_gold_solar():
     """Charge les données Gold solaires."""
     path = _get_s3_path("DELTA_GOLD", "s3a://greeniot/gold", "/solar")
     try:
-        df = DeltaTable(path, storage_options=get_storage_options()).to_pandas()
+        df = _get_delta_table(path).to_pandas()
         df["ts"] = pd.to_datetime(df["ts"]) if "ts" in df.columns else pd.to_datetime(df["timestamp"])
         return df
     except Exception as e:
+        _notify_fallback("Gold solar", e)
         path = os.path.join(DATA_DIR, "gold_solar.parquet")
         if os.path.exists(path):
             df = pd.read_parquet(path)
@@ -284,3 +328,39 @@ def _generate_demo_solar_data():
     })
 
     return pd.concat([df1, df2]).sort_values("ts").reset_index(drop=True)
+
+
+def detect_runtime_mode() -> str:
+    """Return a lightweight runtime mode label for the dashboard."""
+    if os.getenv("DEMO_MODE", "false").lower() == "true":
+        return "demo"
+    if DeltaTable is None:
+        return "fallback"
+    return "connected"
+
+
+def summarize_dataframe_freshness(df: pd.DataFrame, ts_col: str = "ts") -> str:
+    """Return a short freshness summary for a dataframe."""
+    if df is None or df.empty or ts_col not in df.columns:
+        return "No live timestamp available"
+
+    ts = pd.to_datetime(df[ts_col], errors="coerce").dropna()
+    if ts.empty:
+        return "No live timestamp available"
+
+    latest = ts.max()
+    if latest.tzinfo is not None:
+        now = pd.Timestamp.now(tz=latest.tzinfo)
+    else:
+        now = pd.Timestamp.now()
+        
+    delta = now - latest
+    minutes = int(delta.total_seconds() // 60)
+
+    if minutes <= 1:
+        return f"Latest point at {latest.strftime('%H:%M:%S')} (just now)"
+    if minutes < 60:
+        return f"Latest point at {latest.strftime('%H:%M:%S')} ({minutes} min ago)"
+
+    hours = round(minutes / 60, 1)
+    return f"Latest point at {latest.strftime('%H:%M:%S')} ({hours} h ago)"

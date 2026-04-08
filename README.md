@@ -13,7 +13,7 @@ GreenIoT-MA est un pipeline end-to-end de monitoring intelligent pour les Green 
 
 - **Collecte IoT temps réel** via capteurs simulés (solaire, serveurs, refroidissement)
 - **Stockage Lakehouse souverain** avec architecture Medallion (Bronze → Silver → Gold)
-- **Machine Learning prédictif** : LSTM/XGBoost pour la consommation, XGBoost Classifier pour les anomalies
+- **Machine Learning prédictif** : LSTM/XGBoost pour la consommation, Isolation Forest pour les anomalies
 - **Optimisation de charge** : décalage des tâches batch vers les pics de production solaire
 - **Dashboard interactif** Streamlit pour le monitoring en temps réel
 
@@ -40,41 +40,49 @@ Sources IoT → Kafka (Ingestion) → Delta Lake (Medallion) → ML Models → S
 greeniot_ma/
 ├── docker-compose.yml          # Kafka + Zookeeper + MinIO + MLflow
 ├── requirements.txt            # Dépendances Python
+├── pytest.ini                  # Configuration des tests
 ├── README.md                   # Ce fichier
 ├── .env                        # Variables d'environnement
+├── .env.example                # Exemple de configuration locale
 │
 ├── 01_simulation/
-│   ├── sensor_simulator.py          # Générateur de capteurs IoT (temps réel)
-│   ├── kafka_producer.py            # Envoi vers Kafka (4 topics)
-│   ├── generate_static_dataset.py  # Générateur de données statiques (7 jours)
-│   ├── fetch_uci_household.py       # [WIP] Téléchargement dataset UCI (non intégré)
-│   └── datasets/                    # Dossier pour datasets locaux optionnels
+│   ├── sensor_simulator.py     # Générateur de capteurs IoT
+│   ├── kafka_producer.py       # Envoi vers Kafka
+│   ├── generate_static_dataset.py  # Données statiques (7 jours)
+│   └── datasets/               # Données open source (UCI, Google PUE)
 │
 ├── 02_ingestion/
-│   ├── kafka_consumer.py       # Consommateur Kafka basique
-│   └── spark_streaming.py      # PySpark Structured Streaming (4 topics)
+│   ├── kafka_consumer.py       # Consommateur Kafka → Bronze
+│   └── spark_streaming.py      # PySpark Structured Streaming
 │
 ├── 03_lakehouse/
-│   ├── schema.py               # Schémas Delta Lake (Bronze/Silver/Gold × servers+solar+battery)
-│   ├── bronze_to_silver.py     # Nettoyage Bronze → Silver (servers + solar)
-│   └── silver_to_gold.py       # Feature engineering Silver → Gold (servers + solar)
+│   ├── schema.py               # Schémas Delta Lake
+│   ├── bronze_to_silver.py     # Nettoyage Bronze → Silver
+│   └── silver_to_gold.py       # Feature engineering → Gold
 │
 ├── 04_ml/
-│   ├── train_prediction.py     # LSTM + XGBoost (prédiction consommation)
-│   ├── train_anomaly.py        # XGBoost Supervisé ou Isolation Forest (auto)
+│   ├── train_prediction.py     # LSTM + XGBoost (prédiction conso)
+│   ├── train_anomaly.py        # Isolation Forest (anomalies)
 │   ├── optimize_load.py        # Décalage charge solaire
+│   ├── inspect_preds.py        # Inspection rapide des sorties modèles
 │   └── mlflow_tracking.py      # Suivi expériences MLflow
 │
 ├── 05_dashboard/
 │   ├── app.py                  # Application Streamlit principale
 │   ├── pages/
 │   │   ├── monitoring.py       # Monitoring temps réel
-│   │   ├── predictions.py      # Prédictions ML (LSTM + XGBoost)
-│   │   └── optimization.py     # Optimisation charge solaire
+│   │   ├── predictions.py      # Prédictions ML
+│   │   └── optimization.py     # Optimisation charge
 │   └── utils/
-│       └── data_loader.py      # Chargement données (Mode Démo inclus)
+│       ├── data_loader.py      # Chargement données
+│       └── ui_blocks.py        # Blocs UI réutilisables
 │
-└── 06_rapport/
+├── tests/
+│   ├── conftest.py             # Bootstrap commun des tests
+│   ├── test_dataloader.py      # Tests unitaires data loader
+│   └── test_minio*.py          # Tests d'intégration MinIO (optionnels)
+│
+└── Rapport/
     └── figures/                # Graphiques pour le rapport
 ```
 
@@ -92,7 +100,10 @@ greeniot_ma/
 git clone <repo-url>
 cd greeniot_ma
 pip install -r requirements.txt
+copy .env.example .env
 ```
+
+Puis adapter `.env` si nécessaire (paths datasets, mode de données, endpoints MinIO/MLflow).
 
 ### 2. Démarrer l'infrastructure
 
@@ -141,76 +152,32 @@ streamlit run 05_dashboard/app.py
 
 Accès : `http://localhost:8501`
 
-## 📊 Sources de données
-
-### Mode `DATA_MODE=real` (défaut — datasets réels intégrés)
-
-Le pipeline utilise de vraies données pour les serveurs et le refroidissement,
-couplées à une synthèse physique pour le solaire et la batterie.
-
-| Capteur | Source réelle | Chemin local |
-|---------|--------------|-------------|
-| **Serveurs** | [UCI Household Electric](https://archive.ics.uci.edu/dataset/235) — 2M mesures 1 min | `UCI_DATASET` dans `.env` |
-| **Refroidissement** | [ASHRAE Energy Prediction](https://www.kaggle.com/c/ashrae-energy-prediction) — 1 an, 1k bâtiments | `ASHRAE_TRAIN_DATASET` dans `.env` |
-| **Solaire** | Synthèse physique (modèle irradiance Dakhla, `sin(π*(h-6)/12)`) | — |
-| **Batterie** | Synthèse physique (modèle SOC évolutif, charge 10h–16h) | — |
-
-**Mapping des données réelles :**
-- UCI `Global_active_power` (kW) → `power_kw` des racks (re-scalé 30–120 kW)
-- UCI `Global_intensity` (A) → proxy `cpu_pct` normalisé
-- ASHRAE `meter_reading` (kWh) → `it_load_kw` refroidissement
-- ASHRAE `weather_train.air_temperature` → `PUE = 1.20 + 0.012 × max(0, T-18°C)`
-
-### Mode `DATA_MODE=synthetic` (fallback)
-
-Toutes les données sont générées mathématiquement (modèles physiques) sans
-aucun fichier externe requis.
-
-| Capteur | Modèle physique |
-|---------|----------------|
-| **Solaire** | `sin(π*(h-6)/12)` + bruit `gauss(σ=3%)` |
-| **Serveurs** | Pattern circadien (8h–20h pic), weekday vs weekend |
-| **Refroidissement** | PUE = f(T_ext marocaine) |
-| **Batterie** | SOC évolutif borné [10%, 100%] |
-
-> [!NOTE]
-> Le mode `real` est activé automatiquement si les fichiers UCI et ASHRAE sont
-> accessibles aux chemins définis dans `.env`. En cas d'erreur de lecture,
-> la génération bascule silencieusement en mode synthétique.
-
-## 🏗️ Architecture Medallion — État réel
-
-| Flux | Couche Bronze | Couche Silver | Couche Gold |
-|------|--------------|--------------|-------------|
-| **Servers** | ✅ Ingérée (Kafka) | ✅ Complète (rolling, anomaly_flag) | ✅ ML-ready (lags, cyclique) |
-| **Solar** | ✅ Ingérée (Kafka) | ✅ Complète (rolling, anomaly_solar) | ✅ ML-ready (lags, cyclique) |
-| **Cooling** | ✅ Ingérée (Kafka) | ❗ Non transformée (monitoring uniquement) | ❗ Non applicable |
-| **Battery** | ✅ Ingérée (Kafka) | ❗ Non transformée (monitoring uniquement) | ❗ Non applicable |
-
-## 🤖 Détection d'anomalies — Stratégie adaptative
-
-Le script `train_anomaly.py` choisit automatiquement son algorithme selon la disponibilité des labels :
-
-- **XGBoost Supervisé** : si la colonne `anomaly_flag` est présente dans les données Gold (labels générés par la couche Silver via z-score > 3)
-- **Isolation Forest** : si aucun label n'est disponible (détection non-supervisée, `contamination=0.05`)
-
-Les deux modèles sont tracés dans MLflow avec leurs métriques respectives.
-
-## 🎭 Mode Démonstration
-
-Le dashboard intègre un Mode Démo qui se déclenche automatiquement si MinIO (Delta Lake) est inaccessible. Il génère des données synthétiques localement pour permettre une démonstration sans infrastructure.
+## ✅ Vérification rapide
 
 ```bash
-# Force le mode démo dans .env
-DEMO_MODE=true
+pytest -q
 ```
 
-La page Prédictions propose également un toggle **"🪄 Lisser le signal"** qui applique un filtre rolling(4) sur les valeurs réelles pour atténuer le bruit blanc des capteurs lors d'une soutenance.
+Les tests MinIO sont désactivés par défaut pour éviter les faux échecs hors environnement live.  
+Pour les activer :
+
+```bash
+set RUN_MINIO_TESTS=true
+pytest -q
+```
+
+## 📊 Datasets utilisés
+
+| Dataset | Source | Usage |
+|---------|--------|-------|
+| UCI Individual Household Electric | [archive.ics.uci.edu](https://archive.ics.uci.edu/dataset/235) | Baseline prédiction, pré-entraînement LSTM |
+
+## 📈 Métriques cibles
 
 | Modèle | Métriques | Objectif |
 |--------|-----------|----------|
 | Prédiction conso (LSTM/XGBoost) | MAE, RMSE, R², MAPE | MAE < 5 kW, MAPE < 8% |
-| Détection anomalies (XGBoost Classifier) | Précision, Rappel, F1 | F1 > 0.80, FP < 5% |
+| Détection anomalies (Isolation Forest) | Précision, Rappel, F1 | F1 > 0.80, FP < 5% |
 | Optimiseur décalage | kWh décalés/j, CO2 économisé | ≥ 20% charge, ≥ 50 kg CO2/j |
 
 ## 🇲🇦 Contexte Maroc Digital 2030

@@ -18,6 +18,11 @@ load_dotenv()
 # Force loopback — évite le BlockManagerId NPE sous Windows
 os.environ["SPARK_LOCAL_IP"] = "127.0.0.1"
 
+MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://localhost:9000")
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "greeniot")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "greeniot2030")
+MINIO_PATH_STYLE = os.getenv("AWS_S3_FORCE_PATH_STYLE", "true")
+
 # Chemin absolu vers le fichier log4j2 — dans le même répertoire que ce module
 _LOG4J2 = Path(__file__).parent / "log4j2.properties"
 
@@ -57,10 +62,10 @@ def get_spark(app_name: str) -> SparkSession:
         .config("spark.sql.catalog.spark_catalog",
                 "org.apache.spark.sql.delta.catalog.DeltaCatalog")
         # ── MinIO / S3A ───────────────────────────────────────
-        .config("spark.hadoop.fs.s3a.endpoint",           "http://localhost:9000")
-        .config("spark.hadoop.fs.s3a.access.key",         os.getenv("MINIO_ACCESS_KEY", "greeniot"))
-        .config("spark.hadoop.fs.s3a.secret.key",         os.getenv("MINIO_SECRET_KEY", "greeniot2030"))
-        .config("spark.hadoop.fs.s3a.path.style.access",  "true")
+        .config("spark.hadoop.fs.s3a.endpoint",           MINIO_ENDPOINT)
+        .config("spark.hadoop.fs.s3a.access.key",         MINIO_ACCESS_KEY)
+        .config("spark.hadoop.fs.s3a.secret.key",         MINIO_SECRET_KEY)
+        .config("spark.hadoop.fs.s3a.path.style.access",  MINIO_PATH_STYLE)
         .config("spark.hadoop.fs.s3a.impl",
                 "org.apache.hadoop.fs.s3a.S3AFileSystem")
         .config("spark.hadoop.fs.s3a.aws.credentials.provider",
