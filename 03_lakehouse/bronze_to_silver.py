@@ -47,14 +47,25 @@ def transform_servers(spark):
         df_srv.withColumn("power_kw_avg5", avg("power_kw").over(w5_srv))
         .withColumn("power_kw_std5", stddev("power_kw").over(w5_srv))
         .withColumn("cpu_avg5", avg("cpu_pct").over(w5_srv))
+        .withColumn("temp_avg5", avg("temp_c").over(w5_srv))
     )
 
     w_lag_srv = Window.partitionBy("sensor_id").orderBy("ts")
     df_srv = df_srv.withColumn("power_delta", col("power_kw") - lag("power_kw", 1).over(w_lag_srv))
 
+    std_guard = when(col("power_kw_std5").isNull() | (col("power_kw_std5") < 2.5), 2.5).otherwise(col("power_kw_std5"))
+    thermal_alert = (col("temp_c") >= 60) | (col("temp_c") > col("temp_avg5") + 6)
+    cpu_alert = col("cpu_pct") >= 92
+    unstable_power = (spark_abs(col("power_delta")) > 2.4 * std_guard) & (spark_abs(col("power_delta")) > 8)
+    sustained_drift = (
+        (col("power_kw") > col("power_kw_avg5") * 1.20)
+        & (col("cpu_pct") > col("cpu_avg5") * 1.10)
+        & (col("temp_c") > col("temp_avg5") + 3)
+    )
+
     df_srv = df_srv.withColumn(
         "anomaly_flag",
-        when(spark_abs(col("power_delta")) > 3 * col("power_kw_std5"), 1).otherwise(0),
+        when(thermal_alert | cpu_alert | unstable_power | sustained_drift, 1).otherwise(0),
     )
 
     df_srv.write.format("delta").mode("overwrite").option("overwriteSchema", "true").save(SILVER_SERVERS)

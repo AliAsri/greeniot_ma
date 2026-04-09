@@ -225,10 +225,19 @@ def create_silver_data(server_df: pd.DataFrame) -> pd.DataFrame:
         df.loc[mask, "power_kw_avg5"] = df.loc[mask, "power_kw"].rolling(5, min_periods=1).mean()
         df.loc[mask, "power_kw_std5"] = df.loc[mask, "power_kw"].rolling(5, min_periods=1).std().fillna(0)
         df.loc[mask, "cpu_avg5"] = df.loc[mask, "cpu_pct"].rolling(5, min_periods=1).mean()
+        df.loc[mask, "temp_avg5"] = df.loc[mask, "temp_c"].rolling(5, min_periods=1).mean()
         df.loc[mask, "power_delta"] = df.loc[mask, "power_kw"].diff().fillna(0)
 
-    # Flag anomalie (z-score > 3)
-    df["anomaly_flag"] = (abs(df["power_delta"]) > 3 * df["power_kw_std5"]).astype(int)
+    std_guard = df["power_kw_std5"].fillna(0).clip(lower=2.5)
+    thermal_alert = (df["temp_c"] >= 60) | (df["temp_c"] > df["temp_avg5"] + 6)
+    cpu_alert = df["cpu_pct"] >= 92
+    unstable_power = (df["power_delta"].abs() > 2.4 * std_guard) & (df["power_delta"].abs() > 8)
+    sustained_drift = (
+        (df["power_kw"] > df["power_kw_avg5"] * 1.20)
+        & (df["cpu_pct"] > df["cpu_avg5"] * 1.10)
+        & (df["temp_c"] > df["temp_avg5"] + 3)
+    )
+    df["anomaly_flag"] = (thermal_alert | cpu_alert | unstable_power | sustained_drift).astype(int)
 
     # PUE simulé pour le dashboard (reproductible avec seed)
     rng = np.random.default_rng(42)
@@ -241,6 +250,7 @@ def create_gold_data(silver_df: pd.DataFrame) -> pd.DataFrame:
     """Crée une version Gold (ML-ready) des données serveurs."""
     df = silver_df.copy()
     df["ts"] = pd.to_datetime(df["ts"]) if "ts" in df.columns else pd.to_datetime(df["timestamp"])
+    df = df.sort_values(["sensor_id", "ts"]).reset_index(drop=True)
 
     # Features temporelles encodées
     df["hour"] = df["ts"].dt.hour
@@ -257,6 +267,10 @@ def create_gold_data(silver_df: pd.DataFrame) -> pd.DataFrame:
         mask = df["sensor_id"] == sid
         for lag in [1, 3, 6, 12]:
             df.loc[mask, f"power_kw_lag{lag}"] = df.loc[mask, "power_kw"].shift(lag)
+        df.loc[mask, "power_kw_avg12"] = df.loc[mask, "power_kw"].rolling(13, min_periods=1).mean()
+        df.loc[mask, "power_kw_std12"] = df.loc[mask, "power_kw"].rolling(13, min_periods=1).std().fillna(0)
+        df.loc[mask, "power_kw_max12"] = df.loc[mask, "power_kw"].rolling(13, min_periods=1).max()
+        df.loc[mask, "power_kw_avg24"] = df.loc[mask, "power_kw"].rolling(25, min_periods=1).mean()
 
     df = df.dropna()
     return df

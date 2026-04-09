@@ -83,10 +83,11 @@ def build_solar_profile(solar_df: pd.DataFrame, slot_minutes: int = DEFAULT_SLOT
     if df.empty:
         return pd.DataFrame(columns=["slot_ts", "solar_kw", "available_kw", "available_kwh"])
 
+    total_power = df.groupby("ts", as_index=False)["production_kw"].sum()
     profile = (
-        df.set_index("ts")
+        total_power.set_index("ts")
         .resample(f"{slot_minutes}min")["production_kw"]
-        .sum()
+        .mean()
         .fillna(0.0)
         .reset_index()
         .rename(columns={"ts": "slot_ts", "production_kw": "solar_kw"})

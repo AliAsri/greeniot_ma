@@ -122,7 +122,7 @@ class LSTMPredictor(nn.Module):
 def create_sequences(data: np.ndarray, window: int, horizon: int):
     """Create sliding windows for sequence training."""
     X, y = [], []
-    for i in range(len(data) - window - horizon):
+    for i in range(len(data) - window - horizon + 1):
         X.append(data[i : i + window])
         y.append(data[i + window : i + window + horizon, 0])
     return np.array(X, dtype=np.float32), np.array(y, dtype=np.float32)
@@ -223,7 +223,7 @@ def train_lstm(X_tr, y_tr, X_val, y_val, features, scaler):
 
             mae = mean_absolute_error(y_val_unscaled, val_pred_unscaled)
             rmse = np.sqrt(mean_squared_error(y_val_unscaled, val_pred_unscaled))
-            r2 = r2_score(y_val.flatten(), val_pred.flatten())
+            r2 = r2_score(y_val_unscaled.flatten(), val_pred_unscaled.flatten())
             mape_val = mape(y_val_unscaled.flatten(), val_pred_unscaled.flatten())
 
             mlflow.log_metrics(
@@ -328,7 +328,7 @@ def train_xgboost(X_tr, y_tr, X_val, y_val, features, scaler):
 
         overall_mae = mean_absolute_error(y_val_unscaled, val_pred_unscaled)
         overall_rmse = np.sqrt(mean_squared_error(y_val_unscaled, val_pred_unscaled))
-        overall_r2 = r2_score(y_val.flatten(), val_pred.flatten())
+        overall_r2 = r2_score(y_val_unscaled.flatten(), val_pred_unscaled.flatten())
         overall_mape = mape(y_val_unscaled.flatten(), val_pred_unscaled.flatten())
 
         mlflow.log_metrics(

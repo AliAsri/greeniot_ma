@@ -1,48 +1,165 @@
-# 📊 Datasets et Sources de Données (GreenIoT-MA)
+# Datasets et sources de donnees
 
-Ce document décrit les sources de données réelles et les API publiques exploitées par la plateforme **GreenIoT-MA** pour simuler avec un haut degré de réalisme la consommation énergétique (IT et Refroidissement) ainsi que la production d'énergie solaire d'un Green Data Center.
+Ce document recense les sources de donnees supportees par GreenIoT-MA et explique comment elles sont utilisees dans le projet.
 
-> [!NOTE]
-> Pour des raisons de respect de la propriété intellectuelle et des limites d'espace de stockage GitHub (`.gitignore`), **les fichiers bruts des datasets ne sont pas inclus dans ce dépôt**. Les liens ci-dessous vous permettront de les télécharger localement.
+## 1. Principe general
 
----
+GreenIoT-MA peut fonctionner de deux manieres :
 
-## 1. UC Irvine — Individual Household Electric Power Consumption
-*Utilisé pour la simulation de la charge informatique (IT Load / Serveurs).*
+- avec des datasets reels optionnels pour enrichir la simulation
+- avec une generation completement synthetique pour la demo locale
 
-- **Source :** [UCI Machine Learning Repository - Dataset 235](https://archive.ics.uci.edu/dataset/235)
-- **Taille :** ~2 millions de relevés (2006-2010), ~130 Mo.
-- **Rôle dans le projet :** 
-  Plutôt que d'utiliser des générateurs aléatoires cycliques (`sin`/`cos`) pour la puissance `power_kw`, nous mappons les relevés massifs de consommation active (Global Active Power) de ce dataset à la consommation individuelle de nos **racks de serveurs**. Cela permet aux modèles de Machine Learning (LSTM/XGBoost) de s'entraîner sur des "pics" et des "bruits" temporels réels.
-- **Variables extraites :** `Date`, `Time`, `Global_active_power`, `Global_reactive_power`.
+Les fichiers bruts volumineux ne sont pas versionnes dans ce depot.
 
----
+## 2. Sources supportees
 
-## 2. ASHRAE Energy Prediction (Kaggle)
-*Utilisé pour la simulation de la charge thermique (Système de Refroidissement & PUE).*
+### UCI Individual Household Electric Power Consumption
 
-- **Source :** [Kaggle ASHRAE Great Energy Predictor III](https://www.kaggle.com/c/ashrae-energy-prediction/data)
-- **Rôle dans le projet :**
-  L'efficacité énergétique (PUE - Power Usage Effectiveness) d'un centre de données est drastiquement impactée par le système de refroidissement (Chillers / CRAH). Nous utilisons le fichier d'entraînement d'ASHRAE pour les séries temporelles de "chilled_water" (eau glacée). 
-- **Variables extraites :** `meter_reading` (converti en charge thermique frigorifique et électricité de refroidissement), `timestamp`.
+Usage principal :
 
----
+- simulation de la charge `servers`
 
-## 3. Open-Meteo API
-*Utilisé pour la production Solaire (Photovoltaïque) et la température de l'air.*
+Script associe :
 
-- **Source :** [Open-Meteo Open Source Weather API](https://open-meteo.com/)
-- **Rôle dans le projet :**
-  - **Irradiation (W/m²) :** L'API `Historical Weather API` ainsi que `Forecast API` nous délivrent l'irradiation solaire globale (`direct_radiation_instant`) aux coordonnées géographiques du centre de données (ex: Dakhla, Maroc). C'est le cœur de notre module d'**Optimisation de charge**, nous permettant de décaler les "Batch Jobs" au moment du pic solaire.
-  - **Température extérieure (°C) :** Utilisée pour simuler les rendements de refroidissement (free cooling) en calculant le PUE de manière dynamique.
-- **Variables extraites :** `temperature_2m`, `direct_radiation`, `shortwave_radiation`.
+- `01_simulation/fetch_uci_household.py`
 
----
+Role dans le projet :
 
-## ⚙️ Comment utiliser ces données ?
+- fournir une serie temporelle reelle de consommation electrique
+- servir de base a la generation de charges IT plus credibles
+- alimenter la creation de donnees `servers` en mode `real`
 
-Si vous exécutez le projet localement :
-1. Téléchargez les fichiers de Kaggle et UCI.
-2. Placez-les dans un répertoire non suivi par git (par exemple, créez un dossier `data/raw/` à la racine de votre projet local).
-3. Modifiez votre fichier `.env` avec les chemins absolus vers vos fichiers de données (ex: `POWER_CONSUMPTION_DATASET`, `ASHRAE_TRAIN_DATASET`).
-4. Lancez le script de simulation spatio-temporelle : `python 01_simulation/generate_static_dataset.py`.
+Variables exploitees :
+
+- `Date`
+- `Time`
+- `Global_active_power`
+- variables electriques associees selon le fichier disponible
+
+Chemin attendu :
+
+- variable d'environnement `UCI_DATASET`
+
+### ASHRAE Energy Prediction
+
+Usage principal :
+
+- simulation de la partie `cooling`
+
+Script associe :
+
+- `01_simulation/fetch_ashrae.py`
+
+Role dans le projet :
+
+- produire des profils thermiques et energetiques plus credibles
+- enrichir la simulation de refroidissement
+- servir de base au mode `real` pour les donnees `cooling`
+
+Variables couramment utilisees :
+
+- `meter_reading`
+- `timestamp`
+- `air_temperature`
+- metadonnees batiment selon disponibilite
+
+Chemins attendus :
+
+- `ASHRAE_TRAIN_DATASET`
+- `ASHRAE_BUILDING_META`
+- `ASHRAE_WEATHER_TRAIN`
+
+## 3. Donnees synthetiques generees localement
+
+Le script `01_simulation/generate_static_dataset.py` peut generer tout le socle de donnees necessaire au projet sans dependre d'une infrastructure live.
+
+Il produit notamment :
+
+- des donnees `servers`
+- des donnees `solar`
+- des donnees `cooling`
+- des donnees `battery`
+
+Le solaire est genere a partir d'un modele journalier physique simplifie avec variabilite meteorologique simulee. Il ne depend pas d'une API externe obligatoire pour la demo locale.
+
+## 4. Modes de generation
+
+Le projet distingue deux logiques de generation :
+
+### Mode `real`
+
+Utilise les datasets optionnels lorsqu'ils sont disponibles :
+
+- `UCI` pour `servers`
+- `ASHRAE` pour `cooling`
+- solaire genere localement par modele physique
+
+### Mode `synthetic`
+
+Tout est genere localement sans fichiers externes.
+
+Ce mode est utile pour :
+
+- tester vite le pipeline
+- lancer le dashboard sans preparation lourde
+- travailler hors connexion aux datasets reels
+
+## 5. Fichiers produits localement
+
+La generation locale cree des fichiers dans le dossier `data/`.
+
+Exemples importants :
+
+- `data/raw_servers.parquet`
+- `data/raw_solar.parquet`
+- `data/raw_cooling.parquet`
+- `data/raw_battery.parquet`
+- `data/silver_servers_latest.parquet`
+- `data/silver_solar_latest.parquet`
+- `data/gold_servers.parquet`
+- `data/gold_solar.parquet`
+
+Ces fichiers servent ensuite a :
+
+- entrainer les modeles
+- alimenter le dashboard en mode local
+- verifier la coherence des transformations
+
+## 6. Utilisation pratique
+
+### Cas le plus simple
+
+Pour une demo locale rapide :
+
+```bash
+python 01_simulation/generate_static_dataset.py
+python 03_lakehouse/bronze_to_silver.py
+python 03_lakehouse/silver_to_gold.py
+streamlit run 05_dashboard/app.py
+```
+
+### Cas avec datasets reels
+
+1. telecharger les jeux de donnees UCI et ASHRAE
+2. definir les variables d'environnement correspondantes
+3. lancer `generate_static_dataset.py`
+4. poursuivre le pipeline lakehouse et ML
+
+## 7. Ce qui n'est pas inclus dans le depot
+
+Ne sont pas commits ici :
+
+- gros fichiers bruts UCI
+- gros fichiers bruts ASHRAE
+- exports lourds de travail local
+
+Le but est de garder le depot versionnable et reproductible sans stocker de donnees proprietaires ou trop volumineuses.
+
+## 8. Resume
+
+GreenIoT-MA supporte a la fois :
+
+- des datasets reels optionnels pour gagner en realisme
+- des donnees synthetiques pour la demo et le developpement rapide
+
+Cette combinaison rend le projet plus pratique a presenter, plus simple a rejouer et plus credible pour l'entrainement des modeles.

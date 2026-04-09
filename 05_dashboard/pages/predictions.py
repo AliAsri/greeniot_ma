@@ -40,6 +40,12 @@ class LSTMPredictor(nn.Module):
         return self.head(out[:, -1, :])
 
 
+def _format_metric(value, suffix: str = "", precision: int = 2) -> str:
+    if value is None:
+        return "N/A"
+    return f"{value:.{precision}f}{suffix}"
+
+
 def _build_live_predictions(df: pd.DataFrame):
     root_dir = os.path.join(os.path.dirname(__file__), "..", "..")
     models_dir = os.path.join(root_dir, "models")
@@ -50,11 +56,11 @@ def _build_live_predictions(df: pd.DataFrame):
     n_pts = min(200, len(df))
     sample_df = df.sort_values("ts").tail(n_pts).copy() if "power_kw" in df.columns else pd.DataFrame()
 
-    xgb_metrics = {"mae": 4.15, "rmse": 6.01, "r2": 0.87, "mape": 7.8}
-    lstm_metrics = {"mae": 3.42, "rmse": 5.18, "r2": 0.91, "mape": 6.2}
+    xgb_metrics = {}
+    lstm_metrics = {}
     xgb_payload_for_fi = None
     features_for_fi = None
-    inference_status = "Validated metrics loaded. Live inference not yet available."
+    inference_status = "Prediction artifacts are unavailable. Live forecasts are disabled until models are trained."
 
     if os.path.exists(xgb_path) and os.path.exists(scaler_path) and not sample_df.empty:
         try:
@@ -76,26 +82,12 @@ def _build_live_predictions(df: pd.DataFrame):
 
             saved_metrics = xgb_payload.get("metrics", {})
             if saved_metrics:
-                xgb_metrics.update(
-                    {
-                        "mae": saved_metrics.get("mae", xgb_metrics["mae"]),
-                        "rmse": saved_metrics.get("rmse", xgb_metrics["rmse"]),
-                        "r2": saved_metrics.get("r2", xgb_metrics["r2"]),
-                        "mape": saved_metrics.get("mape", xgb_metrics["mape"]),
-                    }
-                )
+                xgb_metrics.update(saved_metrics)
 
             lstm_metrics_path = os.path.join(models_dir, "lstm_metrics.pkl")
             if os.path.exists(lstm_metrics_path):
                 saved_lstm_metrics = joblib.load(lstm_metrics_path)
-                lstm_metrics.update(
-                    {
-                        "mae": saved_lstm_metrics.get("mae", lstm_metrics["mae"]),
-                        "rmse": saved_lstm_metrics.get("rmse", lstm_metrics["rmse"]),
-                        "r2": saved_lstm_metrics.get("r2", lstm_metrics["r2"]),
-                        "mape": saved_lstm_metrics.get("mape", lstm_metrics["mape"]),
-                    }
-                )
+                lstm_metrics.update(saved_lstm_metrics)
 
             df_sorted = df.sort_values(["sensor_id", "ts"])
             results = []
@@ -139,6 +131,12 @@ def _build_live_predictions(df: pd.DataFrame):
 
             if results:
                 sample_df = pd.concat(results)
+                if "pred_xgb" in sample_df.columns:
+                    xgb_metrics.setdefault("mae", float(np.mean(np.abs(sample_df["power_kw"] - sample_df["pred_xgb"]))))
+                    xgb_metrics.setdefault("rmse", float(np.sqrt(np.mean((sample_df["power_kw"] - sample_df["pred_xgb"]) ** 2))))
+                if "pred_lstm" in sample_df.columns:
+                    lstm_metrics.setdefault("mae", float(np.mean(np.abs(sample_df["power_kw"] - sample_df["pred_lstm"]))))
+                    lstm_metrics.setdefault("rmse", float(np.sqrt(np.mean((sample_df["power_kw"] - sample_df["pred_lstm"]) ** 2))))
                 inference_status = "Live inference available from local model artifacts."
             else:
                 inference_status = "Model artifacts loaded, but not enough recent sequences were available."
@@ -146,16 +144,8 @@ def _build_live_predictions(df: pd.DataFrame):
         except Exception as exc:
             inference_status = f"Live inference temporarily unavailable: {exc}"
 
-    if not sample_df.empty and "pred_xgb" not in sample_df.columns:
-        np.random.seed(42)
-        sample_df["pred_lstm"] = (
-            sample_df.groupby("sensor_id")["power_kw"].transform(lambda x: x.rolling(3, min_periods=1).mean())
-            + np.random.randn(len(sample_df)) * 2.5
-        )
-        sample_df["pred_xgb"] = (
-            sample_df.groupby("sensor_id")["power_kw"].transform(lambda x: x.rolling(3, min_periods=1).mean())
-            + np.random.randn(len(sample_df)) * 3.5
-        )
+    if "pred_xgb" not in sample_df.columns and "pred_lstm" not in sample_df.columns:
+        sample_df = pd.DataFrame()
 
     return sample_df, lstm_metrics, xgb_metrics, xgb_payload_for_fi, features_for_fi, inference_status
 
@@ -204,9 +194,10 @@ def render():
     sample_df, lstm_metrics, xgb_metrics, xgb_payload, fi_features_src, inference_status = _build_live_predictions(df)
     st.info(inference_status)
 
-    lstm_won = lstm_metrics["mae"] < xgb_metrics["mae"]
-    xgb_won = xgb_metrics["mae"] <= lstm_metrics["mae"]
-    winner = "LSTM" if lstm_won else "XGBoost"
+    lstm_mae = lstm_metrics.get("mae")
+    xgb_mae = xgb_metrics.get("mae")
+    lstm_won = lstm_mae is not None and xgb_mae is not None and lstm_mae < xgb_mae
+    xgb_won = lstm_mae is not None and xgb_mae is not None and xgb_mae <= lstm_mae
 
 
 
@@ -220,18 +211,18 @@ def render():
     with col1:
         st.markdown(f"### LSTM {'Gagnant' if lstm_won else ''}")
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("MAE", f"{lstm_metrics['mae']:.2f} kW")
-        m2.metric("RMSE", f"{lstm_metrics['rmse']:.2f} kW")
-        m3.metric("R2", f"{lstm_metrics['r2']:.2f}")
-        m4.metric("MAPE", f"{lstm_metrics['mape']:.1f}%")
+        m1.metric("MAE", _format_metric(lstm_metrics.get("mae"), " kW"))
+        m2.metric("RMSE", _format_metric(lstm_metrics.get("rmse"), " kW"))
+        m3.metric("R2", _format_metric(lstm_metrics.get("r2")))
+        m4.metric("MAPE", _format_metric(lstm_metrics.get("mape"), "%", precision=1))
 
     with col2:
         st.markdown(f"### XGBoost {'Gagnant' if xgb_won else ''}")
         m5, m6, m7, m8 = st.columns(4)
-        m5.metric("MAE", f"{xgb_metrics['mae']:.2f} kW")
-        m6.metric("RMSE", f"{xgb_metrics['rmse']:.2f} kW")
-        m7.metric("R2", f"{xgb_metrics['r2']:.2f}")
-        m8.metric("MAPE", f"{xgb_metrics['mape']:.1f}%")
+        m5.metric("MAE", _format_metric(xgb_metrics.get("mae"), " kW"))
+        m6.metric("RMSE", _format_metric(xgb_metrics.get("rmse"), " kW"))
+        m7.metric("R2", _format_metric(xgb_metrics.get("r2")))
+        m8.metric("MAPE", _format_metric(xgb_metrics.get("mape"), "%", precision=1))
 
     tab_live, tab_errors, tab_signals = st.tabs(["Prevision live", "Profil d'erreur", "Signaux & drivers"])
 
@@ -306,18 +297,21 @@ def render():
                     st.plotly_chart(fig_err, use_container_width=True)
 
                 with col_b:
-                    summary_df = pd.DataFrame(
-                        {
-                            "Metric": ["MAE", "RMSE", "MAPE"],
-                            "LSTM": [lstm_metrics["mae"], lstm_metrics["rmse"], lstm_metrics["mape"]],
-                            "XGBoost": [xgb_metrics["mae"], xgb_metrics["rmse"], xgb_metrics["mape"]],
-                        }
-                    )
-                    fig_compare = go.Figure()
-                    fig_compare.add_trace(go.Bar(name="LSTM", x=summary_df["Metric"], y=summary_df["LSTM"], marker_color="#d88b2b"))
-                    fig_compare.add_trace(go.Bar(name="XGBoost", x=summary_df["Metric"], y=summary_df["XGBoost"], marker_color="#2a7da7"))
-                    fig_compare.update_layout(template="plotly_white", height=410, barmode="group", title="Comparaison des metriques")
-                    st.plotly_chart(fig_compare, use_container_width=True)
+                    if lstm_metrics and xgb_metrics:
+                        summary_df = pd.DataFrame(
+                            {
+                                "Metric": ["MAE", "RMSE", "MAPE"],
+                                "LSTM": [lstm_metrics.get("mae"), lstm_metrics.get("rmse"), lstm_metrics.get("mape")],
+                                "XGBoost": [xgb_metrics.get("mae"), xgb_metrics.get("rmse"), xgb_metrics.get("mape")],
+                            }
+                        )
+                        fig_compare = go.Figure()
+                        fig_compare.add_trace(go.Bar(name="LSTM", x=summary_df["Metric"], y=summary_df["LSTM"], marker_color="#d88b2b"))
+                        fig_compare.add_trace(go.Bar(name="XGBoost", x=summary_df["Metric"], y=summary_df["XGBoost"], marker_color="#2a7da7"))
+                        fig_compare.update_layout(template="plotly_white", height=410, barmode="group", title="Comparaison des metriques")
+                        st.plotly_chart(fig_compare, use_container_width=True)
+                    else:
+                        st.info("Les metriques de validation ne sont pas disponibles tant que les artefacts d'entrainement ne sont pas presents.")
             else:
                 st.warning("L'analyse des residus n'est pas disponible.")
 
@@ -366,17 +360,15 @@ def render():
         with col_right:
             fi_features, fi_importance = _extract_feature_importance(xgb_payload, fi_features_src)
             if fi_features is None:
-                fi_features = ["power_kw_lag1", "cpu_pct", "hour_sin", "power_kw_avg5", "ram_pct", "hour_cos"]
-                fi_importance = [0.28, 0.22, 0.18, 0.15, 0.10, 0.07]
-                st.caption("Importance de reference affichee car les artefacts locaux du modele sont indisponibles.")
-
-            fig_imp = px.bar(
-                x=fi_importance,
-                y=fi_features,
-                orientation="h",
-                title="Importance des features - XGBoost",
-                labels={"x": "Importance", "y": "Feature"},
-                color_discrete_sequence=["#166a4a"],
-            )
-            fig_imp.update_layout(template="plotly_white", height=410, yaxis=dict(autorange="reversed"))
-            st.plotly_chart(fig_imp, use_container_width=True)
+                st.info("L'importance des features sera disponible une fois les artefacts XGBoost charges.")
+            else:
+                fig_imp = px.bar(
+                    x=fi_importance,
+                    y=fi_features,
+                    orientation="h",
+                    title="Importance des features - XGBoost",
+                    labels={"x": "Importance", "y": "Feature"},
+                    color_discrete_sequence=["#166a4a"],
+                )
+                fig_imp.update_layout(template="plotly_white", height=410, yaxis=dict(autorange="reversed"))
+                st.plotly_chart(fig_imp, use_container_width=True)

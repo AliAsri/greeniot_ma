@@ -187,9 +187,20 @@ def load_uci_as_servers(
 
     # Rééchantillonnage optionnel (pour aligner sur interval_min)
     if target_timestamps is not None:
-        result = result.set_index("ts")
-        result = result.reindex(target_timestamps, method="nearest", tolerance="5min")
-        result = result.reset_index().rename(columns={"index": "ts"})
+        aligned_frames = []
+        for rack_id, rack_df in result.groupby("sensor_id", sort=False):
+            aligned = (
+                rack_df.sort_values("ts")
+                .set_index("ts")
+                .reindex(target_timestamps, method="nearest", tolerance="5min")
+                .reset_index()
+                .rename(columns={"index": "ts"})
+            )
+            aligned["sensor_id"] = rack_id
+            aligned["timestamp"] = aligned["ts"].dt.strftime("%Y-%m-%dT%H:%M:%S")
+            aligned_frames.append(aligned)
+
+        result = pd.concat(aligned_frames, ignore_index=True)
         result = result.dropna(subset=["power_kw"])
 
     print(f"\n   🖥️  Racks générés : {n_racks} × {len(df):,} points = {len(result):,} lignes total")

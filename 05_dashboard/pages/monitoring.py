@@ -258,10 +258,6 @@ def render():
     with col6:
         if "pue" in df_filtered.columns and not df_filtered.empty:
             pue_by_time = df_filtered.groupby(df_filtered["ts"].dt.floor("5min"))["pue"].mean().reset_index()
-            if not pue_by_time.empty and pue_by_time["pue"].std() < 0.01:
-                hours = pue_by_time["ts"].dt.hour + pue_by_time["ts"].dt.minute / 60
-                procedural_noise = np.sin(pue_by_time["ts"].astype("int64") // 10**9 * 0.5) * 0.02
-                pue_by_time["pue"] = 1.45 + 0.08 * np.sin(np.pi * (hours - 8) / 12) + procedural_noise
 
             fig_pue = px.line(
                 pue_by_time,
@@ -275,6 +271,8 @@ def render():
             fig_pue.update_yaxes(range=[1.2, 1.8])
             fig_pue.update_layout(template="plotly_white", height=310)
             st.plotly_chart(fig_pue, use_container_width=True)
+            if not pue_by_time.empty and pue_by_time["pue"].std() < 0.01:
+                st.caption("Le PUE varie peu sur la fenetre selectionnee ; la courbe affiche donc un signal reel presque plat.")
 
     if "anomaly_flag" in df_filtered.columns:
         anomalies = df_filtered[df_filtered["anomaly_flag"] == 1].copy()

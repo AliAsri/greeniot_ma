@@ -1,187 +1,272 @@
-# 🌿 GreenIoT-MA
+# GreenIoT-MA
 
-**Pipeline IoT · Lakehouse · Machine Learning · Green Data Centers**
+GreenIoT-MA est un projet de pilotage energetique pour data center qui combine simulation IoT, lakehouse Delta, machine learning et dashboard Streamlit.
 
-> Data Engineering & ML
-> Contexte : Stratégie Maroc Digital 2030 · Défi Green IT · Neutralité carbone 2035
+Le projet couvre quatre besoins complementaires :
 
----
+- observer l'etat energetique et thermique des serveurs
+- structurer les donnees dans une architecture Bronze / Silver / Gold
+- predire la charge IT et detecter les anomalies
+- optimiser le decalage de taches batch vers les meilleures plages solaires
 
-## 📋 Description
+## Vue d'ensemble
 
-GreenIoT-MA est un pipeline end-to-end de monitoring intelligent pour les Green Data Centers marocains. Le projet combine :
+Le pipeline suit une chaine de bout en bout :
 
-- **Collecte IoT temps réel** via capteurs simulés (solaire, serveurs, refroidissement)
-- **Stockage Lakehouse souverain** avec architecture Medallion (Bronze → Silver → Gold)
-- **Machine Learning prédictif** : LSTM/XGBoost pour la consommation, Isolation Forest pour les anomalies
-- **Optimisation de charge** : décalage des tâches batch vers les pics de production solaire
-- **Dashboard interactif** Streamlit pour le monitoring en temps réel
-
-## 🏗️ Architecture
-
-```
-Sources IoT → Kafka (Ingestion) → Delta Lake (Medallion) → ML Models → Streamlit Dashboard
-     ↓              ↓                    ↓                    ↓              ↓
-  Simulateurs   Streaming         Bronze/Silver/Gold      MLflow        Monitoring
-  Python        PySpark           MinIO (S3)              PyTorch       Plotly
+```text
+Simulation / Datasets
+    -> Kafka / PySpark
+    -> Delta Lake sur MinIO
+    -> Features Gold
+    -> Modeles ML
+    -> Dashboard Streamlit
 ```
 
-| Couche | Rôle | Technologies |
-|--------|------|-------------|
-| 1 — Sources | Simulation capteurs IoT | Python, psutil, faker |
-| 2 — Ingestion | Streaming temps réel | Apache Kafka, PySpark |
-| 3 — Stockage | Lakehouse Medallion | Delta Lake, MinIO, Parquet |
-| 4 — ML | Prédiction & anomalies | scikit-learn, PyTorch, MLflow |
-| 5 — Viz | Dashboard monitoring | Streamlit, Plotly |
+Le dashboard expose aujourd'hui trois pages :
 
-## 📁 Structure du projet
+- `Monitoring` : telemetrie temps reel et signaux de sante
+- `Predictions` : comparaison LSTM / XGBoost et vues anomalies
+- `Optimization` : load shifting journalier avec historique sur les 5 derniers jours
 
-```
+## Fonctionnalites principales
+
+### 1. Simulation et donnees
+
+- simulation de capteurs `solar`, `servers` et `cooling`
+- generation d'un dataset statique local pour la demo
+- integration possible de datasets de reference comme UCI
+
+### 2. Ingestion et lakehouse
+
+- ingestion temps reel via Kafka
+- consumer Python et pipeline PySpark
+- stockage Delta / Parquet sur MinIO
+- transformations Medallion :
+  - Bronze : donnees brutes
+  - Silver : nettoyage et enrichissement
+  - Gold : features pour prediction, anomalies et optimisation
+
+### 3. Machine learning
+
+- prediction de consommation IT avec `XGBoost` et `LSTM`
+- detection d'anomalies par `XGBoost supervise` sur labels heuristiques enrichis
+- calibration du seuil de decision pour la detection d'anomalies
+- suivi des experiences via MLflow
+
+### 4. Optimisation energetique
+
+- construction d'un profil solaire journalier en slots de 15 minutes
+- recherche d'une fenetre solaire optimale
+- planification de taches batch selon :
+  - priorite
+  - duree
+  - puissance requise
+  - couverture solaire disponible
+- affichage du `load shifting` et du `CO2 potentiel`
+
+## Architecture technique
+
+| Couche | Role | Outils |
+|---|---|---|
+| Simulation | Generation des flux IoT | Python |
+| Ingestion | Streaming et collecte | Kafka, PySpark |
+| Stockage | Lakehouse Medallion | Delta Lake, MinIO, Parquet |
+| ML | Prevision et anomalies | scikit-learn, XGBoost, PyTorch, MLflow |
+| Visualisation | Pilotage et restitution | Streamlit, Plotly |
+
+## Structure du depot
+
+```text
 greeniot_ma/
-├── docker-compose.yml          # Kafka + Zookeeper + MinIO + MLflow
-├── requirements.txt            # Dépendances Python
-├── pytest.ini                  # Configuration des tests
-├── README.md                   # Ce fichier
-├── .env                        # Variables d'environnement
-├── .env.example                # Exemple de configuration locale
-│
-├── 01_simulation/
-│   ├── sensor_simulator.py     # Générateur de capteurs IoT
-│   ├── kafka_producer.py       # Envoi vers Kafka
-│   ├── generate_static_dataset.py  # Données statiques (7 jours)
-│   └── datasets/               # Données open source (UCI, Google PUE)
-│
-├── 02_ingestion/
-│   ├── kafka_consumer.py       # Consommateur Kafka → Bronze
-│   └── spark_streaming.py      # PySpark Structured Streaming
-│
-├── 03_lakehouse/
-│   ├── schema.py               # Schémas Delta Lake
-│   ├── bronze_to_silver.py     # Nettoyage Bronze → Silver
-│   └── silver_to_gold.py       # Feature engineering → Gold
-│
-├── 04_ml/
-│   ├── train_prediction.py     # LSTM + XGBoost (prédiction conso)
-│   ├── train_anomaly.py        # Isolation Forest (anomalies)
-│   ├── optimize_load.py        # Décalage charge solaire
-│   ├── inspect_preds.py        # Inspection rapide des sorties modèles
-│   └── mlflow_tracking.py      # Suivi expériences MLflow
-│
-├── 05_dashboard/
-│   ├── app.py                  # Application Streamlit principale
-│   ├── pages/
-│   │   ├── monitoring.py       # Monitoring temps réel
-│   │   ├── predictions.py      # Prédictions ML
-│   │   └── optimization.py     # Optimisation charge
-│   └── utils/
-│       ├── data_loader.py      # Chargement données
-│       └── ui_blocks.py        # Blocs UI réutilisables
-│
-├── tests/
-│   ├── conftest.py             # Bootstrap commun des tests
-│   ├── test_dataloader.py      # Tests unitaires data loader
-│   └── test_minio*.py          # Tests d'intégration MinIO (optionnels)
-│
-└── Rapport/
-    └── figures/                # Graphiques pour le rapport
+|-- 01_simulation/
+|-- 02_ingestion/
+|-- 03_lakehouse/
+|-- 04_ml/
+|-- 05_dashboard/
+|-- data/
+|-- models/
+|-- Rapport/
+|-- tests/
+|-- docker-compose.yml
+|-- pytest.ini
+|-- requirements.txt
+`-- README.md
 ```
 
-## 🚀 Installation et lancement
+### Dossiers importants
 
-### Prérequis
+- `01_simulation/`
+  - `sensor_simulator.py`
+  - `kafka_producer.py`
+  - `generate_static_dataset.py`
+- `02_ingestion/`
+  - `spark_streaming.py`
+  - `kafka_consumer.py`
+- `03_lakehouse/`
+  - `bronze_to_silver.py`
+  - `silver_to_gold.py`
+- `04_ml/`
+  - `train_prediction.py`
+  - `train_anomaly.py`
+  - `optimize_load.py`
+- `05_dashboard/`
+  - `app.py`
+  - `pages/monitoring.py`
+  - `pages/predictions.py`
+  - `pages/optimization.py`
 
-- Python 3.10+
-- Docker & Docker Compose
-- 8 Go RAM minimum
+## Installation
 
-### 1. Cloner et installer
+### Prerequis
+
+- Python 3.10 ou plus
+- Docker Desktop
+- 8 Go de RAM minimum recommandes
+
+### Installation locale
 
 ```bash
 git clone <repo-url>
 cd greeniot_ma
+python -m venv .venv
+.venv\Scripts\activate
 pip install -r requirements.txt
 copy .env.example .env
 ```
 
-Puis adapter `.env` si nécessaire (paths datasets, mode de données, endpoints MinIO/MLflow).
+## Demarrage rapide
 
-### 2. Démarrer l'infrastructure
+### 1. Infrastructure
 
 ```bash
 docker-compose up -d
 ```
 
-Cela lance :
-- **Kafka** : `localhost:9092`
-- **MinIO Console** : `http://localhost:9001` (user: `greeniot` / pass: `greeniot2030`)
-- **MLflow UI** : `http://localhost:5000`
+Services attendus :
 
-### 3. Générer les données statiques
+- Kafka sur `localhost:9092`
+- MinIO API sur `http://localhost:9000`
+- MinIO Console sur `http://localhost:9001`
+- MLflow sur `http://localhost:5000`
+
+Le `docker-compose.yml` initialise aussi le bucket MinIO necessaire au projet.
+
+### 2. Mode demo locale
+
+Ce mode est le plus simple pour tester le projet sans streaming live.
 
 ```bash
 python 01_simulation/generate_static_dataset.py
+python 03_lakehouse/bronze_to_silver.py
+python 03_lakehouse/silver_to_gold.py
+python 04_ml/train_prediction.py
+python 04_ml/train_anomaly.py
+streamlit run 05_dashboard/app.py
 ```
 
-### 4. Lancer le pipeline (avec Docker)
+### 3. Mode streaming
 
 ```bash
-# Terminal 1 — Producer Kafka
 python 01_simulation/kafka_producer.py
-
-# Terminal 2 — Consumer PySpark
 python 02_ingestion/spark_streaming.py
-
-# Terminal 3 — Transformations Lakehouse
 python 03_lakehouse/bronze_to_silver.py
 python 03_lakehouse/silver_to_gold.py
 ```
 
-### 5. Entraîner les modèles ML
+## Dashboard
 
-```bash
-python 04_ml/train_prediction.py
-python 04_ml/train_anomaly.py
-python 04_ml/optimize_load.py
-```
+### Monitoring
 
-### 6. Lancer le dashboard
+- telemetrie temps reel des serveurs
+- signaux critiques CPU / temperature / puissance
+- etat general de l'infrastructure
 
-```bash
-streamlit run 05_dashboard/app.py
-```
+### Predictions
 
-Accès : `http://localhost:8501`
+- comparaison des performances `LSTM` et `XGBoost`
+- affichage des previsions si les artefacts ML sont disponibles
+- lecture des anomalies detectees et de leur contexte
 
-## ✅ Vérification rapide
+### Optimization
+
+- vue strictement journaliere
+- historique selectable sur les `5 derniers jours` disponibles
+- calcul coherent de :
+  - `Pic de production`
+  - `Moyenne diurne`
+  - `Energie du jour`
+  - `CO2 potentiel du jour`
+- planification des taches batch sur la meilleure capacite solaire
+
+## Modeles et logique metier
+
+### Prediction
+
+Le projet entraine deux familles de modeles :
+
+- `XGBoost` pour une baseline solide et interpretable
+- `LSTM` pour capter la dynamique temporelle
+
+Les metriques suivies sont :
+
+- `MAE`
+- `RMSE`
+- `R2`
+- `MAPE`
+
+### Anomalies
+
+La detection d'anomalies n'utilise plus `Isolation Forest` comme description principale du projet.
+La version actuelle repose sur :
+
+- des labels heuristiques construits en Silver
+- un entrainement supervise `XGBoost`
+- un seuil de decision calibre sur validation
+
+L'objectif est d'obtenir une detection plus realiste et plus defendable academiquement.
+
+### Load shifting
+
+Le module `04_ml/optimize_load.py` deplace des taches batch vers les meilleurs creneaux solaires en fonction :
+
+- de la priorite
+- de la duree
+- de la puissance requise
+- de la disponibilite solaire par slot
+
+Le dashboard affiche ensuite :
+
+- la fenetre optimale
+- la charge couverte par le solaire
+- la part solaire moyenne par tache
+- l'energie solaire et l'energie reseau du planning
+
+## Tests
 
 ```bash
 pytest -q
 ```
 
-Les tests MinIO sont désactivés par défaut pour éviter les faux échecs hors environnement live.  
-Pour les activer :
+Tests presents :
 
-```bash
-set RUN_MINIO_TESTS=true
-pytest -q
-```
+- `tests/test_dataloader.py`
+- `tests/test_minio.py`
+- `tests/test_minio_read.py`
+- `tests/test_minio_exact_error.py`
 
-## 📊 Datasets utilisés
+## Limites actuelles
 
-| Dataset | Source | Usage |
-|---------|--------|-------|
-| UCI Individual Household Electric | [archive.ics.uci.edu](https://archive.ics.uci.edu/dataset/235) | Baseline prédiction, pré-entraînement LSTM |
+- les transformations Bronze / Silver / Gold restent principalement en mode `overwrite`
+- la page `Optimization` repose sur des taches batch parametrees dans le dashboard
+- certaines parties live dependent de la disponibilite complete de Delta / MinIO / Kafka
 
-## 📈 Métriques cibles
+## Pistes d'amelioration
 
-| Modèle | Métriques | Objectif |
-|--------|-----------|----------|
-| Prédiction conso (LSTM/XGBoost) | MAE, RMSE, R², MAPE | MAE < 5 kW, MAPE < 8% |
-| Détection anomalies (Isolation Forest) | Précision, Rappel, F1 | F1 > 0.80, FP < 5% |
-| Optimiseur décalage | kWh décalés/j, CO2 économisé | ≥ 20% charge, ≥ 50 kg CO2/j |
+- passage a un pipeline incrementiel avec `merge`
+- integration d'un vrai ordonnanceur de taches batch
+- ajout d'un cout horaire de l'electricite pour une optimisation cout + carbone
+- industrialisation CI / smoke tests dashboard / validation de schema
 
-## 🇲🇦 Contexte Maroc Digital 2030
+## Resume
 
-- **Neutralité carbone** : 100% des data centers d'ici 2035
-- **Méga-campus Igoudar Dajla** : 500 MW, 100% énergies renouvelables
-- **Conformité réglementaire** : loi 09-08, décret 2-24-921
+GreenIoT-MA est un demonstrateur complet de data engineering et d'IA appliquee a la gestion energetique. Le projet ne se limite pas a visualiser des donnees : il cherche aussi a recommander quand executer les charges flexibles pour mieux exploiter le solaire.

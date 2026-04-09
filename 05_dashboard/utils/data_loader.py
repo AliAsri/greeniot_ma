@@ -120,11 +120,26 @@ def _enrich_bronze(df):
     df["power_kw_avg5"] = df.groupby("sensor_id")["power_kw"].transform(
         lambda x: x.rolling(5, min_periods=1).mean()
     )
+    df["cpu_avg5"] = df.groupby("sensor_id")["cpu_pct"].transform(
+        lambda x: x.rolling(5, min_periods=1).mean()
+    )
+    df["temp_avg5"] = df.groupby("sensor_id")["temp_c"].transform(
+        lambda x: x.rolling(5, min_periods=1).mean()
+    )
     df["power_delta"] = df.groupby("sensor_id")["power_kw"].diff()
-    std5 = df.groupby("sensor_id")["power_kw"].transform(
+    df["power_kw_std5"] = df.groupby("sensor_id")["power_kw"].transform(
         lambda x: x.rolling(5, min_periods=1).std()
     )
-    df["anomaly_flag"] = (df["power_delta"].abs() > 3 * std5).astype(int).fillna(0)
+    std_guard = df["power_kw_std5"].fillna(0).clip(lower=2.5)
+    thermal_alert = (df["temp_c"] >= 60) | (df["temp_c"] > df["temp_avg5"] + 6)
+    cpu_alert = df["cpu_pct"] >= 92
+    unstable_power = (df["power_delta"].abs() > 2.4 * std_guard) & (df["power_delta"].abs() > 8)
+    sustained_drift = (
+        (df["power_kw"] > df["power_kw_avg5"] * 1.20)
+        & (df["cpu_pct"] > df["cpu_avg5"] * 1.10)
+        & (df["temp_c"] > df["temp_avg5"] + 3)
+    )
+    df["anomaly_flag"] = (thermal_alert | cpu_alert | unstable_power | sustained_drift).astype(int).fillna(0)
     
     # PUE estimé seulement si absent de la source
     if "pue" not in df.columns:
@@ -336,7 +351,12 @@ def detect_runtime_mode() -> str:
         return "demo"
     if DeltaTable is None:
         return "fallback"
-    return "connected"
+    try:
+        bronze_path = _get_s3_path("DELTA_BRONZE", "s3a://greeniot/bronze", "/servers")
+        _get_delta_table(bronze_path).schema()
+        return "connected"
+    except Exception:
+        return "fallback"
 
 
 def summarize_dataframe_freshness(df: pd.DataFrame, ts_col: str = "ts") -> str:

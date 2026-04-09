@@ -36,7 +36,7 @@ def consume_to_bronze(batch_size: int = 100, flush_interval_sec: int = 60):
         value_deserializer=lambda m: json.loads(m.decode("utf-8")),
         auto_offset_reset="latest",
         group_id="greeniot-bronze-consumer",
-        enable_auto_commit=True,
+        enable_auto_commit=False,
     )
 
     print(f"🌿 Consumer GreenIoT-MA démarré — Kafka: {KAFKA_BROKERS}")
@@ -59,22 +59,32 @@ def consume_to_bronze(batch_size: int = 100, flush_interval_sec: int = 60):
             buffers[topic].append(record)
             print(f"  [{record['timestamp'][:19]}] {topic} ← {record.get('sensor_id', 'unknown')}")
 
-            # Flush par batch ou par temps
+            # Flush synchronise puis commit seulement apres persistance reussie.
             elapsed = (datetime.now() - last_flush).seconds
-            for t in TOPICS:
-                if len(buffers[t]) >= batch_size or (elapsed >= flush_interval_sec and buffers[t]):
-                    _flush_buffer(t, buffers[t])
-                    buffers[t] = []
-                    last_flush = datetime.now()
+            should_flush = any(len(buffers[t]) >= batch_size for t in TOPICS) or (
+                elapsed >= flush_interval_sec and any(buffers[t] for t in TOPICS)
+            )
+            if should_flush:
+                _flush_all_buffers(buffers)
+                consumer.commit()
+                last_flush = datetime.now()
 
     except KeyboardInterrupt:
         print("\n\n🛑 Flush final en cours...")
-        for t in TOPICS:
-            if buffers[t]:
-                _flush_buffer(t, buffers[t])
+        if any(buffers[t] for t in TOPICS):
+            _flush_all_buffers(buffers)
+            consumer.commit()
         print("   Consumer arrêté proprement.")
     finally:
         consumer.close()
+
+
+def _flush_all_buffers(buffers: dict):
+    """Persist every non-empty topic buffer before Kafka offsets are committed."""
+    for topic, records in buffers.items():
+        if records:
+            _flush_buffer(topic, records)
+            buffers[topic] = []
 
 
 def _flush_buffer(topic: str, records: list):
